@@ -97,6 +97,12 @@ dialog::backdrop{background:#0009}
         <label>Width <input type="number" id="w" min="4" max="480" oninput="drawTiles()"></label>
         <button onclick="autoWidth()" title="estimate the row stride at this offset">Auto</button>
         <label>Height <input type="number" id="h" min="4" max="480" oninput="drawTiles()"></label>
+        <label>View
+          <select id="mode" onchange="drawTiles()">
+            <option value="strip" selected>strip</option>
+            <option value="tiles">tiles</option>
+          </select>
+        </label>
         <label>Zoom
           <select id="zoom" onchange="drawTiles()">
             <option value="1">1x</option><option value="2" selected>2x</option><option value="3">3x</option>
@@ -117,6 +123,9 @@ dialog::backdrop{background:#0009}
         preserves icon shapes and anything else encoded there; turn it off only deliberately.
         <b>Shift+click</b> a tile to replace it from Valeton Suite's own artwork — the same
         images at far higher resolution than the firmware carries.
+        Images are stacked vertically at varying heights rather than on a grid, so
+        <b>strip</b> view is usually the one you want: click a row to move the offset there,
+        set Height, then Replace.
       </div>
       <div class="grid" id="tiles"></div>
     </div>
@@ -266,6 +275,7 @@ function curEnd(){ return REG?REG.end:curOff()+1<<20; }
 
 function drawTiles(){
   if(!REG)return;
+  if($('#mode').value==='strip')return drawStrip();
   const w=+$('#w').value,h=+$('#h').value,z=+$('#zoom').value;
   if(w<4||h<4)return;
   const start=curOff();
@@ -291,6 +301,46 @@ function drawTiles(){
       <a href="#" onclick="$('#h').value=${Math.max(4,rows)};drawTiles();return false"
          style="color:var(--accent)">use ${Math.max(4,rows)}</a>.</div>`;
   }
+}
+
+/* Images are stacked vertically with varying heights, not laid out on a grid,
+   so a continuous strip is the honest view. Click a row to put the offset there,
+   then set Height and replace. */
+function drawStrip(){
+  const w=+$('#w').value, z=+$('#zoom').value, h=+$('#h').value;
+  const start=curOff(), avail=Math.max(0,curEnd()-start);
+  const ROWS=Math.min(Math.floor(avail/(w*3)), 260);
+  const COLS=Math.max(1,Math.min(8,Math.ceil(Math.floor(avail/(w*3))/ROWS)));
+  const g=$('#tiles'); g.innerHTML='';
+  for(let c=0;c<COLS;c++){
+    const off=start+c*ROWS*w*3;
+    if(off>=curEnd())break;
+    const wrap=document.createElement('div');
+    wrap.className='tile'; wrap.style.padding='4px';
+    const img=document.createElement('img');
+    img.src=`/api/strip?off=${off}&w=${w}&rows=${ROWS}&scale=${z}&t=${Date.now()}`;
+    img.width=w*z; img.style.cursor='crosshair';
+    img.onclick=e=>{
+      const row=Math.floor(e.offsetY/z);
+      const at=off+row*w*3;
+      $('#off').value='0x'+at.toString(16).toUpperCase();
+      log(`offset set to 0x${at.toString(16).toUpperCase()} (row ${row} of this column)`);
+      drawTiles();
+    };
+    const cap=document.createElement('div');
+    cap.className='n';
+    cap.textContent='0x'+off.toString(16).toUpperCase();
+    wrap.appendChild(img); wrap.appendChild(cap);
+    g.appendChild(wrap);
+  }
+  const bar=document.createElement('div');
+  bar.className='hint';
+  bar.style.width='100%';
+  bar.innerHTML=`Click anywhere in a strip to move the offset to that row.
+    Current selection: <b>0x${curOff().toString(16).toUpperCase()}</b>, ${w}&times;${h}
+    &nbsp;<button onclick="replaceOne(curOff(),${w},${h})">Replace this</button>
+    <button onclick="pickFromAssets(curOff(),${w},${h})">from Suite artwork…</button>`;
+  g.appendChild(bar);
 }
 
 function chooseFile(){return new Promise(res=>{

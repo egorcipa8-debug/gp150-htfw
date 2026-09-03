@@ -420,6 +420,20 @@ class Handler(BaseHTTPRequestHandler):
                 buf = io.BytesIO()
                 im.save(buf, 'PNG')
                 return self._send(200, buf.getvalue(), 'image/png')
+            if u.path == '/api/strip':
+                off = int(q['off'][0], 0)
+                w = int(q['w'][0])
+                rows = int(q['rows'][0])
+                scale = int(q.get('scale', ['2'])[0])
+                src = PROJECT.body
+                avail = (len(src) - off) // (w * 3)
+                rows = max(1, min(rows, avail))
+                im = decode_image(src, off, w, rows)
+                if scale > 1:
+                    im = im.resize((w * scale, rows * scale), Image.NEAREST)
+                buf = io.BytesIO()
+                im.save(buf, 'PNG')
+                return self._send(200, buf.getvalue(), 'image/png')
             if u.path == '/api/stride':
                 off = int(q['off'][0], 0)
                 span = int(q.get('span', ['60000'])[0])
