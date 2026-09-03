@@ -83,11 +83,19 @@ dialog::backdrop{background:#0009}
   <section id="gfx">
     <div class="card">
       <div class="row">
+        <label>Known slot
+          <select id="preset" onchange="usePreset()">
+            <option value="">— pick —</option>
+          </select>
+        </label>
         <label>Region
           <select id="region" onchange="pickRegion()"></select>
         </label>
         <label>Offset <input id="off" style="width:110px" oninput="drawTiles()"></label>
+        <button onclick="nudge(-1)" title="back one row">&minus;row</button>
+        <button onclick="nudge(1)" title="forward one row">+row</button>
         <label>Width <input type="number" id="w" min="4" max="480" oninput="drawTiles()"></label>
+        <button onclick="autoWidth()" title="estimate the row stride at this offset">Auto</button>
         <label>Height <input type="number" id="h" min="4" max="480" oninput="drawTiles()"></label>
         <label>Zoom
           <select id="zoom" onchange="drawTiles()">
@@ -102,6 +110,8 @@ dialog::backdrop{background:#0009}
         Image boundaries in the firmware are not labelled, so offset, width and height are
         estimates — nudge them until the tiles line up, then click one to replace it.
         Offset is free-form hex, so you are not limited to the detected regions.
+        <b>Auto</b> re-estimates the stride at wherever you are; <b>±row</b> shifts by one
+        row so you can walk an image into alignment.
         <b>Keep alpha byte</b> copies the third byte of every pixel from the original, which
         preserves icon shapes and anything else encoded there; turn it off only deliberately.
       </div>
@@ -116,8 +126,10 @@ dialog::backdrop{background:#0009}
         <input id="q" placeholder="search text…" style="width:280px" oninput="loadStrings()">
         <span class="meta" id="scount"></span>
       </div>
-      <div class="hint">Edits are written in place. A string can grow into the padding that
-        follows it — the room column is the hard limit in bytes. Press Enter to apply.</div>
+      <div class="hint">Only runs that look like real text and sit among other strings are
+        listed — the firmware is full of printable byte sequences that are not text at all.
+        Edits are written in place; the room column is the hard limit in bytes.
+        Press Enter to apply.</div>
       <table id="stbl"><thead><tr>
         <th style="width:110px">offset</th><th>text</th>
         <th style="width:80px">bytes</th><th style="width:80px">room</th>
@@ -162,11 +174,27 @@ dialog::backdrop{background:#0009}
 
 <script>
 let ST=null, REG=null, DIRTY=new Set();
+
+/* Slots located by hand in GP-150 V1.1.1 (payload offsets). Starting points,
+   not gospel - use Auto and +-row to fine-tune. */
+const PRESETS=[
+ {n:'menu icons 32px',        off:0x0B7000, w:32,  h:32},
+ {n:'NAM / fx icons 80px',    off:0x27C000, w:80,  h:80},
+ {n:'amp + cab A 172px',      off:0x0C4800, w:172, h:83},
+ {n:'amp + cab B 172px',      off:0x0D0800, w:172, h:130},
+ {n:'drum kit 152px',         off:0x0A6800, w:152, h:148},
+ {n:'pedal calibration 112px',off:0x0E1000, w:112, h:112},
+ {n:'small elements 34px',    off:0x1EA800, w:34,  h:34},
+ {n:'font glyphs 8px',        off:0x2A9000, w:8,   h:16},
+];
 const $=s=>document.querySelector(s);
 const log=(m,c='')=>{const d=$('#log');d.innerHTML+=`<div class="${c}">${m}</div>`;d.scrollTop=1e9;};
 
-async function api(p,o){const r=await fetch(p,o);const j=await r.json();
-  if(j.error){log('✗ '+j.error,'e');throw new Error(j.error)}return j}
+async function api(p,o){
+  const r=await fetch(p,o);
+  let j; try{j=await r.json()}catch(e){log('✗ '+p+' → HTTP '+r.status,'e');throw e}
+  if(j.error){log('✗ '+j.error,'e');throw new Error(j.error)}
+  return j}
 
 function tab(n){document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.tab===n));
   ['gfx','str','fnt','inf'].forEach(s=>$('#'+s).hidden=(s!==n));
@@ -183,14 +211,41 @@ async function refresh(){
   ST.regions.forEach(r=>{const o=document.createElement('option');
     o.value=r.id;o.textContent=`0x${r.off.toString(16).toUpperCase().padStart(6,'0')} · ${(r.bytes/1024|0)} KB · ~${r.width}px`;
     sel.appendChild(o)});
+  const ps=$('#preset');
+  ps.innerHTML='<option value="">— pick —</option>';
+  PRESETS.forEach((p,i)=>{const o=document.createElement('option');
+    o.value=i;o.textContent=p.n;ps.appendChild(o)});
   if(ST.regions.length){pickRegion()}
   fillInfo();
 }
 
 function pickRegion(){
   REG=ST.regions[+$('#region').value];
-  $('#w').value=REG.width; $('#h').value=REG.width;
   $('#off').value='0x'+REG.off.toString(16).toUpperCase();
+  $('#w').value=REG.width; $('#h').value=REG.width;
+  drawTiles();
+  autoWidth().catch(()=>{});
+}
+function usePreset(){
+  const i=$('#preset').value; if(i==='')return;
+  const p=PRESETS[+i];
+  const r=ST.regions.find(r=>p.off>=r.off&&p.off<r.end);
+  if(r){REG=r; $('#region').value=r.id;}
+  $('#off').value='0x'+p.off.toString(16).toUpperCase();
+  $('#w').value=p.w; $('#h').value=p.h;
+  log(`preset: ${p.n} @0x${p.off.toString(16).toUpperCase()} ${p.w}x${p.h}`);
+  drawTiles();
+}
+async function autoWidth(){
+  const off=curOff();
+  const d=await api(`/api/stride?off=${off}`);
+  $('#w').value=d.width; $('#h').value=d.width;
+  log(`auto width at 0x${off.toString(16).toUpperCase()} = ${d.width}px`);
+  drawTiles();
+}
+function nudge(d){
+  const w=+$('#w').value||1;
+  $('#off').value='0x'+(curOff()+d*w*3).toString(16).toUpperCase();
   drawTiles();
 }
 function curOff(){

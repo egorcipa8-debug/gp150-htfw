@@ -181,9 +181,36 @@ class Project(object):
         return best[1]
 
     # ---- strings -------------------------------------------------------
+    @staticmethod
+    def _texty(t):
+        """Reject printable runs that are really binary. Firmware is full of byte
+        sequences that happen to be ASCII; UI text has a word-like shape."""
+        t = t.strip()
+        if len(t) < 4:
+            return False
+        if len(set(t)) < 3:
+            return False
+        letters = sum(c.isalpha() for c in t)
+        if letters / len(t) < 0.55:
+            return False
+        allowed = " .,:;/()-+%'\"!?&#*[]{}<>=_@|"
+        if any(not (c.isalnum() or c in allowed) for c in t):
+            return False
+        # punctuation in a very short token is a hallmark of stray code bytes
+        punct = sum(1 for c in t if not (c.isalnum() or c == ' '))
+        if punct and len(t) < 6:
+            return False
+        if not any(c in 'aeiouAEIOUy0123456789' for c in t):
+            return False
+        return True
+
     def scan_strings(self):
         """NUL-terminated printable runs in section b, with the space available
-        before the next string starts (that bounds a safe in-place edit)."""
+        before the next string starts (that bounds a safe in-place edit).
+
+        Two filters keep binary noise out: each run must look like text, and it
+        must sit in a neighbourhood where other strings live - real UI text is
+        stored in dense tables, stray matches in code are isolated."""
         body = self.body
         secs = {s.tag: s for s in self.fw.sections}
         b = secs.get('b')
@@ -204,12 +231,31 @@ class Project(object):
                 i = j + 1
             else:
                 i += 1
+        # quality filter
+        keep = []
+        for off, ln in found:
+            t = bytes(body[off:off + ln]).decode('latin1')
+            if self._texty(t):
+                keep.append((off, ln, t))
+        # neighbourhood filter. Real UI text sits in tables of *varied* strings;
+        # binary noise shows up as one token repeated at a regular stride, so the
+        # test is how many DISTINCT texts share the neighbourhood.
+        import bisect
+        offs = [k[0] for k in keep]
+        dense = []
+        for off, ln, t in keep:
+            lo_i = bisect.bisect_left(offs, off - 1500)
+            hi_i = bisect.bisect_right(offs, off + 1500)
+            distinct = len({keep[i][2] for i in range(lo_i, hi_i)})
+            if len(t) >= 8 and distinct >= 2:
+                dense.append((off, ln, t))
+            elif distinct >= 6:
+                dense.append((off, ln, t))
         out = []
-        for k, (off, ln) in enumerate(found):
-            nxt = found[k + 1][0] if k + 1 < len(found) else off + ln + 1
-            room = max(ln, nxt - off - 1)
-            out.append({'id': k, 'off': off, 'len': ln, 'room': room,
-                        'text': bytes(body[off:off + ln]).decode('latin1')})
+        for k, (off, ln, t) in enumerate(dense):
+            nxt = dense[k + 1][0] if k + 1 < len(dense) else off + ln + 1
+            room = max(ln, min(nxt - off - 1, ln + 64))
+            out.append({'id': k, 'off': off, 'len': ln, 'room': room, 'text': t})
         self.strings = out
 
     # ---- editing -------------------------------------------------------
@@ -325,6 +371,12 @@ class Handler(BaseHTTPRequestHandler):
                 buf = io.BytesIO()
                 im.save(buf, 'PNG')
                 return self._send(200, buf.getvalue(), 'image/png')
+            if u.path == '/api/stride':
+                off = int(q['off'][0], 0)
+                span = int(q.get('span', ['60000'])[0])
+                span = min(span, len(PROJECT.body) - off - 1024)
+                w = PROJECT.best_stride(off, max(span, 8192)) // 3
+                return self._json({'off': off, 'width': w})
             if u.path == '/api/strings':
                 needle = q.get('q', [''])[0].lower()
                 items = PROJECT.strings
