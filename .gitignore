@@ -1,0 +1,9 @@
+# never commit vendor firmware or anything derived from it
+*.bin
+*.zip
+unp*/
+refs/
+work/
+gfx/
+__pycache__/
+*.pyc
