@@ -142,9 +142,11 @@ command that reaches it, so a bad application image is recoverable.
   table. No linear mapping of any region to `0x80000000` was found; tested per
   region, by free delta sweep over recovered function entries, and by an aligned
   full-file sweep (best 8/91 veneer targets against 0.35 expected — noise).
-- Region `g` — 631 KB, entropy 7.97, byte-identical across firmware versions, so
-  it is static data rather than code. Not unpacked, and not needed for anything
-  reached so far.
+- Region `g` is **the JieLi Bluetooth SoC's firmware** and region `h` is the PD
+  controller's — confirmed by the updater itself, which runs a second
+  "BT And PD Updating" phase after the main firmware phase. Neither targets the
+  Cortex-M7, which is why both carry flash address `0x00000000`, contain no ARM
+  code, and never change between firmware versions.
 - Header field `0x04`. Left untouched by these tools.
 
 `FINDINGS.md` carries the full working notes, including the approaches that failed
@@ -157,8 +159,9 @@ and two corrections to earlier conclusions.
 - Model string and version label **are** validated by newer boot software; a
   changed version label is refused silently. These tools leave both alone.
 - Same-length edits only. A length change to a region is a different problem.
-- Nothing here has been flashed to hardware by this project. Firmware modification
-  voids your warranty and is entirely at your own risk.
+- A rebuilt image **has** been flashed to a real GP-150 and booted normally, so the
+  pipeline is verified end to end. That is not a promise about your own edits.
+  Firmware modification voids your warranty and is entirely at your own risk.
 - Do not redistribute Valeton's firmware images, their `module*_data.json`
   catalogs, or artwork extracted from them.
 

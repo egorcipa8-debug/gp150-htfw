@@ -536,3 +536,47 @@ The veneer table was re-verified with capstone rather than hand bit-twiddling �
 `movw ip,#0xdeb / movt ip,#0x8000 / bx ip` — so the `0x8000xxxx` targets are real. How
 section `d` comes to be addressed at `0x80000000` at run time is still open, but it is
 now a relocation question about a section already in hand, not a decompression one.
+
+---
+
+## 16. Confirmed on hardware
+
+A GP-150 V1.1.1 image rebuilt by `htfw_tool.py` — unpacked, one region of graphics
+replaced, repacked with LZO — **was accepted by Valeton's own updater and flashed
+successfully**. The unit rebooted and works normally afterwards.
+
+Two things this settles:
+
+- The whole pipeline is correct end to end, not just self-consistent on disk.
+- **A larger file is accepted.** The patched image was 5 051 932 bytes against the
+  stock 5 001 052 (+50 KB, photographic content compresses worse than the stock
+  vector-style artwork). The updater read the size from the header and proceeded.
+  What must stay untouched is the model string and the version label.
+
+### Regions `g` and `h` identified — by watching the updater
+
+The update runs in two phases. The second is captioned **"BT And PD Updating"**,
+with its own progress bar, after the main firmware phase completes.
+
+That names the two regions that never fit the RT1064 memory map:
+
+| region | size | what it is |
+|---|---|---|
+| `g` | 631 KB | **firmware for the JieLi Bluetooth/BLE SoC** |
+| `h` | 15 KB | **firmware/config for the PD (USB power delivery) controller** |
+
+Everything now fits:
+
+- neither contains ARM Thumb code (`BX LR` density 0.00–0.01 /KB) because neither
+  targets the Cortex-M7;
+- both carry flash address `0x00000000` because they are not written into the
+  RT1064's flash map at all — they are forwarded to other chips;
+- both are byte-identical between V1.0.5 and V1.1.1 because neither peripheral's
+  firmware changed;
+- `g`'s entropy of 7.97 is JieLi's own packaging, not something the RT1064 unpacks —
+  which is why no decompressor for it exists anywhere in the image, and why looking
+  for one in region `b` was always going to fail.
+
+§10 and §13 chased region `g` as the missing application. It never was. The JieLi
+part is the chip visible next to the shield can in the board photographs, with its
+own crystal and U.FL antenna connector.
