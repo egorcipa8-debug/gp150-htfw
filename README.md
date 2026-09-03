@@ -79,6 +79,33 @@ byte**, same SHA-256 — so the DLL's compressor settings match Valeton's own.
 
 ---
 
+## GP-150 Studio
+
+A local browser UI for building modified firmware — browse every image in the
+image, replace any of them, edit the on-screen text, and write a flashable file.
+
+```
+cd studio
+python server.py "GP-150 Firmware V1.1.1.bin"
+```
+
+It serves http://127.0.0.1:8765 and opens it for you. Nothing leaves the machine.
+
+- **Graphics** — the image is scanned for graphics regions, each is shown as a grid
+  of tiles. Offset, width and height are all editable with live preview, because the
+  firmware does not label image boundaries; nudge them until the tiles line up, then
+  click one to replace it. *Keep alpha byte* copies the third byte of every pixel
+  from the original so icon shapes survive a replacement.
+- **Text** — every NUL-terminated string in region `b`, searchable and editable in
+  place. The *room* column is the hard byte limit: a string may grow into the padding
+  that follows it, never past the next string.
+- **Font** — the glyph region rendered as a grid, so you can look before you touch it.
+- **Build** — recomputes every region CRC, re-packs with LZO when the source was
+  packed, and leaves the model string and version label alone.
+
+Only Pillow is required. Rebuilding a packed image also needs Valeton Suite
+installed, for its `minilzo_plugin.dll`.
+
 ## Tools
 
 ### `tools/htfw_tool.py`

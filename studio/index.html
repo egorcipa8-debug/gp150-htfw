@@ -1,0 +1,345 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GP-150 Studio</title>
+<style>
+:root{
+  --bg:#14161b; --panel:#1b1e25; --panel2:#22262f; --line:#2e3440;
+  --ink:#e6e9ef; --dim:#98a0b0; --accent:#5b9dff; --good:#4ec98a; --warn:#e8b84b; --bad:#e86b5b;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+     font:13px/1.5 "Segoe UI",system-ui,sans-serif}
+header{display:flex;align-items:center;gap:14px;padding:10px 16px;
+       background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px}
+h1 span{color:var(--dim);font-weight:400}
+.meta{color:var(--dim);font-size:12px}
+.meta b{color:var(--ink);font-weight:600}
+.spacer{flex:1}
+button{background:var(--panel2);color:var(--ink);border:1px solid var(--line);
+       border-radius:6px;padding:6px 12px;cursor:pointer;font:inherit}
+button:hover{border-color:#3d4756;background:#272c36}
+button.primary{background:var(--accent);border-color:var(--accent);color:#0d1520;font-weight:600}
+button.primary:hover{background:#7bb0ff}
+button:disabled{opacity:.45;cursor:default}
+input,select{background:#12141a;color:var(--ink);border:1px solid var(--line);
+             border-radius:5px;padding:5px 8px;font:inherit}
+input[type=number]{width:74px}
+nav{display:flex;gap:2px;padding:0 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+nav a{padding:8px 16px;color:var(--dim);cursor:pointer;border-bottom:2px solid transparent}
+nav a.on{color:var(--ink);border-bottom-color:var(--accent)}
+main{padding:16px}
+.row{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:14px}
+.grid{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.tile{background:#0e1015;border:1px solid var(--line);border-radius:6px;padding:6px;
+      cursor:pointer;text-align:center;position:relative}
+.tile:hover{border-color:var(--accent)}
+.tile img{display:block;image-rendering:pixelated;background:
+  repeating-conic-gradient(#22262f 0 25%,#1a1d24 0 50%) 50%/12px 12px}
+.tile .n{color:var(--dim);font-size:11px;margin-top:4px}
+.tile.dirty{border-color:var(--good)}
+.tile.dirty .n{color:var(--good)}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{color:var(--dim);font-weight:600;font-size:12px}
+td.off{color:var(--dim);font-family:Consolas,monospace;white-space:nowrap}
+td input{width:100%}
+.tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;
+     background:var(--panel2);color:var(--dim);border:1px solid var(--line)}
+.tag.ok{color:var(--good);border-color:#2c5f45}
+.tag.no{color:var(--bad);border-color:#6b3630}
+.hint{color:var(--dim);font-size:12px;margin-top:6px}
+#log{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
+     max-height:130px;overflow:auto;white-space:pre-wrap}
+#log .e{color:var(--bad)} #log .g{color:var(--good)}
+dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);
+       border-radius:10px;padding:16px;min-width:460px}
+dialog::backdrop{background:#0009}
+.list{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:6px;margin-top:8px}
+.list div{padding:5px 10px;cursor:pointer;border-bottom:1px solid #23272f}
+.list div:hover{background:var(--panel2)}
+</style>
+
+<header>
+  <h1>GP-150 <span>Studio</span></h1>
+  <div class="meta" id="fwinfo">no firmware loaded</div>
+  <div class="spacer"></div>
+  <span class="tag" id="edits">0 edits</span>
+  <button onclick="openDlg()">Open…</button>
+  <button onclick="revert()">Revert</button>
+  <button class="primary" onclick="buildDlg()">Build…</button>
+</header>
+
+<nav>
+  <a class="on" data-tab="gfx" onclick="tab('gfx')">Graphics</a>
+  <a data-tab="str" onclick="tab('str')">Text</a>
+  <a data-tab="fnt" onclick="tab('fnt')">Font</a>
+  <a data-tab="inf" onclick="tab('inf')">Image info</a>
+</nav>
+
+<main>
+  <!-- ---------------- graphics ---------------- -->
+  <section id="gfx">
+    <div class="card">
+      <div class="row">
+        <label>Region
+          <select id="region" onchange="pickRegion()"></select>
+        </label>
+        <label>Offset <input id="off" style="width:110px" oninput="drawTiles()"></label>
+        <label>Width <input type="number" id="w" min="4" max="480" oninput="drawTiles()"></label>
+        <label>Height <input type="number" id="h" min="4" max="480" oninput="drawTiles()"></label>
+        <label>Zoom
+          <select id="zoom" onchange="drawTiles()">
+            <option value="1">1x</option><option value="2" selected>2x</option><option value="3">3x</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="palpha" checked> keep alpha byte</label>
+        <div class="spacer"></div>
+        <button onclick="replaceAll()">Replace every tile…</button>
+      </div>
+      <div class="hint">
+        Image boundaries in the firmware are not labelled, so offset, width and height are
+        estimates — nudge them until the tiles line up, then click one to replace it.
+        Offset is free-form hex, so you are not limited to the detected regions.
+        <b>Keep alpha byte</b> copies the third byte of every pixel from the original, which
+        preserves icon shapes and anything else encoded there; turn it off only deliberately.
+      </div>
+      <div class="grid" id="tiles"></div>
+    </div>
+  </section>
+
+  <!-- ---------------- strings ---------------- -->
+  <section id="str" hidden>
+    <div class="card">
+      <div class="row">
+        <input id="q" placeholder="search text…" style="width:280px" oninput="loadStrings()">
+        <span class="meta" id="scount"></span>
+      </div>
+      <div class="hint">Edits are written in place. A string can grow into the padding that
+        follows it — the room column is the hard limit in bytes. Press Enter to apply.</div>
+      <table id="stbl"><thead><tr>
+        <th style="width:110px">offset</th><th>text</th>
+        <th style="width:80px">bytes</th><th style="width:80px">room</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <!-- ---------------- font ---------------- -->
+  <section id="fnt" hidden>
+    <div class="card">
+      <div class="row">
+        <label>Offset <input id="foff" style="width:120px" value="0x2A9000"></label>
+        <label>Glyph w <input type="number" id="fw" value="8"></label>
+        <label>Glyph h <input type="number" id="fh" value="16"></label>
+        <label>Count <input type="number" id="fn" value="128" style="width:90px"></label>
+        <button onclick="drawFont()">Show</button>
+      </div>
+      <div class="hint">The font lives in its own region. Replacing glyphs is possible but
+        breaking it leaves the device with unreadable menus, so preview before you build.</div>
+      <div class="grid" id="fgrid"></div>
+    </div>
+  </section>
+
+  <!-- ---------------- info ---------------- -->
+  <section id="inf" hidden>
+    <div class="card"><table id="sectbl"><thead><tr>
+      <th>region</th><th>flash</th><th>offset</th><th>length</th><th>CRC</th>
+    </tr></thead><tbody></tbody></table></div>
+    <div class="card"><div id="log"></div></div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <div id="dlgbody"></div>
+  <div class="row" style="margin-top:12px;justify-content:flex-end">
+    <button onclick="dlg.close()">Cancel</button>
+    <button class="primary" id="dlgok">OK</button>
+  </div>
+</dialog>
+
+<input type="file" id="picker" accept="image/*" hidden>
+
+<script>
+let ST=null, REG=null, DIRTY=new Set();
+const $=s=>document.querySelector(s);
+const log=(m,c='')=>{const d=$('#log');d.innerHTML+=`<div class="${c}">${m}</div>`;d.scrollTop=1e9;};
+
+async function api(p,o){const r=await fetch(p,o);const j=await r.json();
+  if(j.error){log('✗ '+j.error,'e');throw new Error(j.error)}return j}
+
+function tab(n){document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.tab===n));
+  ['gfx','str','fnt','inf'].forEach(s=>$('#'+s).hidden=(s!==n));
+  if(n==='str')loadStrings(); if(n==='inf')fillInfo();}
+
+async function refresh(){
+  ST=await api('/api/state');
+  if(!ST.loaded){$('#fwinfo').textContent='no firmware loaded';return}
+  $('#fwinfo').innerHTML=`<b>${ST.model}</b> ${ST.version} · ${ST.packed?'LZO-packed':'raw'} ·
+     ${(ST.file_size/1048576).toFixed(2)} MB · ${ST.regions.length} graphics regions · ${ST.strings} strings`;
+  $('#edits').textContent=ST.edits+' edits';
+  $('#edits').className='tag'+(ST.edits?' ok':'');
+  const sel=$('#region');sel.innerHTML='';
+  ST.regions.forEach(r=>{const o=document.createElement('option');
+    o.value=r.id;o.textContent=`0x${r.off.toString(16).toUpperCase().padStart(6,'0')} · ${(r.bytes/1024|0)} KB · ~${r.width}px`;
+    sel.appendChild(o)});
+  if(ST.regions.length){pickRegion()}
+  fillInfo();
+}
+
+function pickRegion(){
+  REG=ST.regions[+$('#region').value];
+  $('#w').value=REG.width; $('#h').value=REG.width;
+  $('#off').value='0x'+REG.off.toString(16).toUpperCase();
+  drawTiles();
+}
+function curOff(){
+  const v=parseInt($('#off').value,16);
+  return Number.isFinite(v)?v:(REG?REG.off:0);
+}
+function curEnd(){ return REG?REG.end:curOff()+1<<20; }
+
+function drawTiles(){
+  if(!REG)return;
+  const w=+$('#w').value,h=+$('#h').value,z=+$('#zoom').value;
+  if(w<4||h<4)return;
+  const start=curOff();
+  const avail=Math.max(0,curEnd()-start);
+  const per=w*h*3, n=Math.min(Math.floor(avail/per),240);
+  const g=$('#tiles');g.innerHTML='';
+  for(let k=0;k<n;k++){
+    const off=start+k*per;
+    const d=document.createElement('div');
+    d.className='tile'+(DIRTY.has(off)?' dirty':'');
+    d.innerHTML=`<img src="/api/image?off=${off}&w=${w}&h=${h}&scale=${z}&t=${Date.now()}"
+                      width="${w*z}" height="${h*z}">
+                 <div class="n">${k} · 0x${off.toString(16).toUpperCase()}</div>`;
+    d.onclick=()=>replaceOne(off,w,h);
+    g.appendChild(d);
+  }
+  if(!n)g.innerHTML='<div class="hint">no whole tile fits these dimensions</div>';
+}
+
+function chooseFile(){return new Promise(res=>{
+  const p=$('#picker');p.value='';
+  p.onchange=()=>{const f=p.files[0];if(!f)return res(null);
+    const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f)};
+  p.click();})}
+
+async function replaceOne(off,w,h){
+  const png=await chooseFile(); if(!png)return;
+  await api('/api/replace',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({off,w,h,png,preserve_alpha:$('#palpha').checked})});
+  DIRTY.add(off); log(`✓ tile at 0x${off.toString(16).toUpperCase()} replaced`,'g');
+  await refreshEdits(); drawTiles();
+}
+
+async function replaceAll(){
+  if(!REG)return;
+  const w=+$('#w').value,h=+$('#h').value;
+  const count=Math.floor(Math.max(0,curEnd()-curOff())/(w*h*3));
+  if(!count)return alert('no whole tile fits these dimensions');
+  if(!confirm(`Replace all ${count} tiles in this region with one image?`))return;
+  const png=await chooseFile(); if(!png)return;
+  await api('/api/replace_many',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({off:curOff(),w,h,count,png,preserve_alpha:$('#palpha').checked})});
+  for(let k=0;k<count;k++)DIRTY.add(curOff()+k*w*h*3);
+  log(`✓ ${count} tiles replaced from 0x${curOff().toString(16).toUpperCase()}`,'g');
+  await refreshEdits(); drawTiles();
+}
+
+async function refreshEdits(){const s=await api('/api/state');
+  $('#edits').textContent=s.edits+' edits';$('#edits').className='tag'+(s.edits?' ok':'');}
+
+async function loadStrings(){
+  const q=$('#q').value;
+  const d=await api('/api/strings?q='+encodeURIComponent(q));
+  $('#scount').textContent=`${d.total} matching, showing ${d.items.length}`;
+  const tb=$('#stbl tbody');tb.innerHTML='';
+  d.items.forEach(s=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="off">0x${s.off.toString(16).toUpperCase()}</td>
+      <td><input value="${s.text.replace(/"/g,'&quot;')}"></td>
+      <td>${s.len}</td><td>${s.room}</td>`;
+    const inp=tr.querySelector('input');
+    inp.onkeydown=async e=>{
+      if(e.key!=='Enter')return;
+      try{
+        await api('/api/string',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({off:s.off,text:inp.value})});
+        log(`✓ 0x${s.off.toString(16).toUpperCase()} = "${inp.value}"`,'g');
+        inp.style.borderColor='#2c5f45'; refreshEdits();
+      }catch(_){inp.style.borderColor='#6b3630'}
+    };
+    tb.appendChild(tr);
+  });
+}
+
+function drawFont(){
+  const off=parseInt($('#foff').value,16)||0, w=+$('#fw').value, h=+$('#fh').value, n=+$('#fn').value;
+  const g=$('#fgrid');g.innerHTML='';
+  for(let k=0;k<n;k++){
+    const o=off+k*w*h*3;
+    const d=document.createElement('div');d.className='tile';
+    d.innerHTML=`<img src="/api/image?off=${o}&w=${w}&h=${h}&scale=3&t=${Date.now()}"
+                      width="${w*3}" height="${h*3}"><div class="n">${k}</div>`;
+    d.onclick=()=>replaceOne(o,w,h);
+    g.appendChild(d);
+  }
+}
+
+function fillInfo(){
+  if(!ST||!ST.loaded)return;
+  const tb=$('#sectbl tbody');tb.innerHTML='';
+  ST.sections.forEach(s=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td><b>${s.tag}</b></td>
+      <td class="off">0x${s.flash.toString(16).toUpperCase().padStart(8,'0')}</td>
+      <td class="off">0x${s.off.toString(16).toUpperCase().padStart(8,'0')}</td>
+      <td>${(s.len/1024).toFixed(0)} KB</td>
+      <td class="off">0x${s.crc.toString(16).toUpperCase().padStart(4,'0')}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+/* ---------- dialogs ---------- */
+const dlg=$('#dlg');
+async function openDlg(dir){
+  const d=await api('/api/browse'+(dir?'?dir='+encodeURIComponent(dir):''));
+  $('#dlgbody').innerHTML=`<b>Open firmware</b>
+    <div class="meta" style="margin:6px 0">${d.dir}</div>
+    <div class="list" id="fl"></div>`;
+  const fl=$('#fl');
+  const add=(t,fn,cls)=>{const e=document.createElement('div');e.textContent=t;e.onclick=fn;
+    if(cls)e.style.color=cls;fl.appendChild(e)};
+  add('.. (up)',()=>openDlg(d.parent),'#98a0b0');
+  d.dirs.forEach(x=>add('📁 '+x,()=>openDlg(d.dir+'\\'+x),'#98a0b0'));
+  d.files.forEach(x=>add('   '+x,async()=>{dlg.close();log('opening '+x);
+    await api('/api/open?path='+encodeURIComponent(d.dir+'\\'+x));
+    DIRTY.clear();await refresh();log('✓ loaded '+x,'g')}));
+  $('#dlgok').style.display='none';
+  dlg.showModal();
+}
+function buildDlg(){
+  if(!ST||!ST.loaded)return;
+  const base=ST.path.replace(/\.bin$/i,'')+' modded.bin';
+  $('#dlgbody').innerHTML=`<b>Build firmware</b>
+    <div class="hint" style="margin:8px 0">Model string and version label are left untouched —
+      newer boot software refuses an image whose version label changed.</div>
+    <input id="outp" style="width:100%" value="${base.replace(/"/g,'&quot;')}">`;
+  $('#dlgok').style.display='';
+  $('#dlgok').onclick=async()=>{
+    const out=$('#outp').value;dlg.close();
+    try{const r=await api('/api/build',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({out})});
+      log(`✓ built ${r.path}\n  ${r.size} bytes (stock ${r.original_size}), ${r.edits} edits`,'g');
+      alert('Built:\n'+r.path+'\n'+r.size+' bytes');
+    }catch(_){}
+  };
+  dlg.showModal();
+}
+async function revert(){if(!confirm('Discard all edits?'))return;
+  await api('/api/revert',{method:'POST'});DIRTY.clear();await refresh();log('reverted');}
+
+refresh();
+</script>

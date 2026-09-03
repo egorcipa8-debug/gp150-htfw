@@ -7,3 +7,4 @@ work/
 gfx/
 __pycache__/
 *.pyc
+studio/__pycache__/
