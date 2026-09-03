@@ -104,6 +104,7 @@ dialog::backdrop{background:#0009}
         </label>
         <label><input type="checkbox" id="palpha" checked> keep alpha byte</label>
         <div class="spacer"></div>
+        <button onclick="assetDlg()">Suite artwork…</button>
         <button onclick="replaceAll()">Replace every tile…</button>
       </div>
       <div class="hint">
@@ -114,6 +115,8 @@ dialog::backdrop{background:#0009}
         row so you can walk an image into alignment.
         <b>Keep alpha byte</b> copies the third byte of every pixel from the original, which
         preserves icon shapes and anything else encoded there; turn it off only deliberately.
+        <b>Shift+click</b> a tile to replace it from Valeton Suite's own artwork — the same
+        images at far higher resolution than the firmware carries.
       </div>
       <div class="grid" id="tiles"></div>
     </div>
@@ -215,7 +218,11 @@ async function refresh(){
   ps.innerHTML='<option value="">— pick —</option>';
   PRESETS.forEach((p,i)=>{const o=document.createElement('option');
     o.value=i;o.textContent=p.n;ps.appendChild(o)});
-  if(ST.regions.length){pickRegion()}
+  if(ST.regions.length){
+    // region 0 is rarely a clean grid; start on a slot that is known to render
+    const i=PRESETS.findIndex(p=>ST.regions.some(r=>p.off>=r.off&&p.off<r.end));
+    if(i>=0){$('#preset').value=i;usePreset();} else {pickRegion();}
+  }
   fillInfo();
 }
 
@@ -239,8 +246,11 @@ function usePreset(){
 async function autoWidth(){
   const off=curOff();
   const d=await api(`/api/stride?off=${off}`);
-  $('#w').value=d.width; $('#h').value=d.width;
-  log(`auto width at 0x${off.toString(16).toUpperCase()} = ${d.width}px`);
+  const avail=Math.max(0,curEnd()-off);
+  const maxRows=Math.floor(avail/(d.width*3));
+  $('#w').value=d.width;
+  $('#h').value=Math.max(4,Math.min(d.width,maxRows));   // always fits at least once
+  log(`auto at 0x${off.toString(16).toUpperCase()}: ${$('#w').value}x${$('#h').value}`);
   drawTiles();
 }
 function nudge(d){
@@ -269,10 +279,18 @@ function drawTiles(){
     d.innerHTML=`<img src="/api/image?off=${off}&w=${w}&h=${h}&scale=${z}&t=${Date.now()}"
                       width="${w*z}" height="${h*z}">
                  <div class="n">${k} · 0x${off.toString(16).toUpperCase()}</div>`;
-    d.onclick=()=>replaceOne(off,w,h);
+    d.onclick=e=>{ e.shiftKey ? pickFromAssets(off,w,h) : replaceOne(off,w,h); };
+    d.title='click: replace from a file   ·   shift+click: pick Suite artwork';
     g.appendChild(d);
   }
-  if(!n)g.innerHTML='<div class="hint">no whole tile fits these dimensions</div>';
+  if(!n){
+    const avail=Math.max(0,curEnd()-start);
+    const rows=Math.floor(avail/(w*3));
+    g.innerHTML=`<div class="hint">No whole tile fits: ${w}&times;${h} needs ${w*h*3} bytes but
+      only ${avail} remain here. This offset has room for <b>${rows}</b> rows —
+      <a href="#" onclick="$('#h').value=${Math.max(4,rows)};drawTiles();return false"
+         style="color:var(--accent)">use ${Math.max(4,rows)}</a>.</div>`;
+  }
 }
 
 function chooseFile(){return new Promise(res=>{
@@ -355,6 +373,47 @@ function fillInfo(){
       <td class="off">0x${s.crc.toString(16).toUpperCase().padStart(4,'0')}</td>`;
     tb.appendChild(tr);
   });
+}
+
+/* ---------- Valeton Suite artwork ---------- */
+let ASSET_TARGET=null;
+function pickFromAssets(off,w,h){ASSET_TARGET={off,w,h};assetDlg();}
+async function assetDlg(dir){
+  const d=await api('/api/assets'+(dir!==undefined?'?dir='+encodeURIComponent(dir):''));
+  if(!d.root){alert('Valeton Suite artwork not found on this machine');return}
+  const tgt=ASSET_TARGET;
+  $('#dlgbody').innerHTML=`<b>Valeton Suite artwork</b>
+    <div class="meta" style="margin:6px 0">${d.rel||'image'} ${tgt?
+      `· replacing the tile at 0x${tgt.off.toString(16).toUpperCase()} (${tgt.w}×${tgt.h})`:
+      '· pick a folder, then a tile to apply it to'}</div>
+    <div id="acrumbs" class="row" style="gap:6px;margin-bottom:8px"></div>
+    <div class="grid" id="agrid" style="max-height:400px;overflow:auto"></div>`;
+  const cr=$('#acrumbs');
+  const up=document.createElement('button');
+  up.textContent=d.rel?'⬅ up':'root';
+  up.onclick=()=>assetDlg(d.parent||'');
+  cr.appendChild(up);
+  d.dirs.forEach(x=>{const b=document.createElement('button');b.textContent='📁 '+x;
+    b.onclick=()=>assetDlg(d.rel?d.rel+'/'+x:x);cr.appendChild(b)});
+  const g=$('#agrid');
+  d.files.forEach(f=>{
+    const rel=(d.rel?d.rel+'/':'')+f;
+    const t=document.createElement('div');t.className='tile';
+    t.innerHTML=`<img src="/api/asset?path=${encodeURIComponent(rel)}&max=64" height="64">
+                 <div class="n" style="max-width:90px;overflow:hidden;text-overflow:ellipsis">${f.replace('.png','')}</div>`;
+    t.onclick=async()=>{
+      if(!ASSET_TARGET){alert('Pick a tile in the grid first, then choose artwork.');return}
+      const {off,w,h}=ASSET_TARGET;
+      await api('/api/replace',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({off,w,h,asset:rel,preserve_alpha:$('#palpha').checked})});
+      DIRTY.add(off); log(`✓ 0x${off.toString(16).toUpperCase()} ← ${rel}`,'g');
+      dlg.close(); ASSET_TARGET=null; await refreshEdits(); drawTiles();
+    };
+    g.appendChild(t);
+  });
+  if(!d.files.length&&!d.dirs.length)g.innerHTML='<div class="hint">empty</div>';
+  $('#dlgok').style.display='none';
+  dlg.showModal();
 }
 
 /* ---------- dialogs ---------- */

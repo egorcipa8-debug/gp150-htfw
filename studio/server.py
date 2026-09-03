@@ -32,6 +32,25 @@ import htfw_tool                            # noqa: E402
 
 PORT = 8765
 
+# Valeton Suite ships its artwork as ordinary PNGs. They are the same images the
+# firmware carries, at much higher resolution, so they make the natural source
+# when replacing a slot. Read-only, and never copied anywhere by this tool.
+_SUITE_TAIL = os.path.join('Valeton Suite', 'data', 'flutter_assets',
+                           'assets', 'image')
+SUITE_ASSETS = [
+    os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'),
+                 'Valeton Suite', _SUITE_TAIL),
+    os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
+                 'Valeton Suite', _SUITE_TAIL),
+]
+
+
+def assets_root():
+    for p in SUITE_ASSETS:
+        if os.path.isdir(p):
+            return p
+    return None
+
 
 # --------------------------------------------------------------------------
 # pixel format: 3 bytes per pixel, little-endian RGB565 then one byte that
@@ -182,6 +201,24 @@ class Project(object):
 
     # ---- strings -------------------------------------------------------
     @staticmethod
+    def _trim_head(t):
+        """Number tails glue onto the front of strings. A float like 1000.0 is
+        `00 00 7A 44`, whose last two bytes print as 'zD', so the scanner reads
+        'zD%.0fHz' where the real entry is '%.0fHz'. Drop a short wordless prefix
+        when a clear token start follows it."""
+        for cut in (1, 2, 3, 4):
+            if cut >= len(t):
+                break
+            head, rest = t[:cut], t[cut:]
+            if ' ' in head or not rest:
+                break
+            starts_token = (rest[0] == '%'
+                            or (rest[0].isupper() and len(rest) > 1 and rest[1].islower()))
+            if starts_token and not head.isalpha() or (starts_token and len(head) <= 2):
+                return cut
+        return 0
+
+    @staticmethod
     def _texty(t):
         """Reject printable runs that are really binary. Firmware is full of byte
         sequences that happen to be ASCII; UI text has a word-like shape."""
@@ -190,8 +227,11 @@ class Project(object):
             return False
         if len(set(t)) < 3:
             return False
+        # judge the word-likeness of the letters only: digits, dots and printf
+        # specifiers are legitimate parts of a label like "%.0fHz" or "30 min"
         letters = sum(c.isalpha() for c in t)
-        if letters / len(t) < 0.55:
+        core = sum(1 for c in t if not (c.isdigit() or c in '.%'))
+        if letters / max(core, 1) < 0.6:
             return False
         allowed = " .,:;/()-+%'\"!?&#*[]{}<>=_@|"
         if any(not (c.isalnum() or c in allowed) for c in t):
@@ -226,15 +266,24 @@ class Project(object):
                 j = i
                 while j < hi and 32 <= body[j] < 127:
                     j += 1
-                if j < hi and body[j] == 0 and (j - i) >= 3:
+                # a real table entry is NUL-terminated *and* NUL-preceded; without
+                # the leading test, printable code bytes glue onto the front and
+                # you get "zD%.0fHz" instead of "%.0fHz"
+                if (j < hi and body[j] == 0 and (j - i) >= 3
+                        and (i == lo or body[i - 1] == 0)):
                     found.append([i, j - i])
                 i = j + 1
             else:
                 i += 1
-        # quality filter
+        # quality filter, with a leading-junk trim first
         keep = []
         for off, ln in found:
             t = bytes(body[off:off + ln]).decode('latin1')
+            d = self._trim_head(t)
+            if d:
+                off += d
+                ln -= d
+                t = t[d:]
             if self._texty(t):
                 keep.append((off, ln, t))
         # neighbourhood filter. Real UI text sits in tables of *varied* strings;
@@ -383,6 +432,34 @@ class Handler(BaseHTTPRequestHandler):
                 if needle:
                     items = [s for s in items if needle in s['text'].lower()]
                 return self._json({'total': len(items), 'items': items[:400]})
+            if u.path == '/api/assets':
+                root = assets_root()
+                if not root:
+                    return self._json({'root': None, 'dirs': [], 'files': []})
+                sub = q.get('dir', [''])[0].replace('..', '')
+                d = os.path.join(root, sub) if sub else root
+                if not os.path.isdir(d):
+                    d = root
+                    sub = ''
+                names = sorted(os.listdir(d))
+                dirs = [x for x in names if os.path.isdir(os.path.join(d, x))]
+                files = [x for x in names if x.lower().endswith('.png')]
+                return self._json({'root': root, 'rel': sub, 'dirs': dirs,
+                                   'files': files,
+                                   'parent': os.path.dirname(sub) if sub else None})
+            if u.path == '/api/asset':
+                root = assets_root()
+                rel = q['path'][0].replace('..', '')
+                full = os.path.join(root, rel)
+                if not os.path.isfile(full):
+                    return self._send(404, 'no asset', 'text/plain')
+                im = Image.open(full).convert('RGBA')
+                mx = int(q.get('max', ['0'])[0])
+                if mx and max(im.size) > mx:
+                    im.thumbnail((mx, mx), Image.LANCZOS)
+                buf = io.BytesIO()
+                im.save(buf, 'PNG')
+                return self._send(200, buf.getvalue(), 'image/png')
             if u.path == '/api/browse':
                 d = q.get('dir', [os.path.expanduser('~')])[0]
                 try:
@@ -398,6 +475,16 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:                    # noqa: BLE001
             return self._err(e)
 
+    @staticmethod
+    def _image_from(data):
+        """Accept either an uploaded PNG or a path into the Suite asset tree."""
+        if data.get('asset'):
+            root = assets_root()
+            full = os.path.join(root, data['asset'].replace('..', ''))
+            return Image.open(full)
+        raw = base64.b64decode(data['png'].split(',')[-1])
+        return Image.open(io.BytesIO(raw))
+
     # ---- POST ----------------------------------------------------------
     def do_POST(self):
         u = urlparse(self.path)
@@ -409,14 +496,12 @@ class Handler(BaseHTTPRequestHandler):
             data = {}
         try:
             if u.path == '/api/replace':
-                png = base64.b64decode(data['png'].split(',')[-1])
-                im = Image.open(io.BytesIO(png))
+                im = self._image_from(data)
                 PROJECT.put_image(int(data['off']), int(data['w']), int(data['h']),
                                   im, bool(data.get('preserve_alpha', True)))
                 return self._json({'ok': True, 'edits': PROJECT.edits})
             if u.path == '/api/replace_many':
-                png = base64.b64decode(data['png'].split(',')[-1])
-                im = Image.open(io.BytesIO(png))
+                im = self._image_from(data)
                 off = int(data['off']); w = int(data['w']); h = int(data['h'])
                 count = int(data['count'])
                 for k in range(count):
