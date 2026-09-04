@@ -153,6 +153,28 @@ installed, for its `minilzo_plugin.dll`.
 
 ## Tools
 
+### `tools/selftest.py`
+
+Everything in here that can be checked without a device, checked against a real
+image:
+
+```
+selftest.py <fw.bin> [capture.nam]
+```
+
+```
+container        header, every region CRC, the whole-file CRC, re-sealing
+round trip       unpack then repack reproduces the file's SHA-256
+image index      132 descriptors, geometry consistent, decode/encode byte-exact
+boot animation   found by its own block structure, put back byte-exact
+packets          CRC-8 table against the DLL's, a frame round-tripped, a
+                 corrupted one rejected
+NAM capture      every weight accounted for, submodels agree (ESR 0.0038)
+```
+
+24 checks on GP-150 V1.1.1, all passing. Nothing in it writes to the firmware,
+opens a MIDI port or touches a device.
+
 ### `tools/htfw_tool.py`
 
 ```
