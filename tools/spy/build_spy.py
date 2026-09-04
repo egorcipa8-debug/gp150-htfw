@@ -52,6 +52,8 @@ HOOKS = {
     'checkCrc':          ('void*', ['void*'], 'plain'),
     'scanInDevice':      ('void*', [], 'quiet'),
     'scanOutDevice':     ('void*', [], 'quiet'),
+    'checkDeviceConnecting': ('int', ['void*'], 'quiet'),
+    'getVersionStringForFilePath': ('void*', ['const char*'], 'plain'),
 }
 
 
@@ -113,6 +115,14 @@ def cmd_generate():
            '    GetTempPathA(sizeof(path), path);',
            '    strcat_s(path, sizeof(path), "gp150_spy.log");',
            '    fopen_s(&spy_f, path, "a");',
+           '    if (!spy_f) {',
+           '        /* a service or a sandboxed TEMP would swallow the capture */',
+           '        DWORD n = GetEnvironmentVariableA("USERPROFILE", path, sizeof(path));',
+           '        if (n && n < sizeof(path)) {',
+           '            strcat_s(path, sizeof(path), "\\\\gp150_spy.log");',
+           '            fopen_s(&spy_f, path, "a");',
+           '        }',
+           '    }',
            '}', '',
            'static void spy_line(const char *fmt, ...) {',
            '    va_list ap;',
@@ -144,7 +154,12 @@ def cmd_generate():
            '}', '',
            'BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {',
            '    (void)h; (void)r;',
-           '    if (reason == DLL_PROCESS_ATTACH) InitializeCriticalSection(&lock);',
+           '    if (reason == DLL_PROCESS_ATTACH) {',
+           '        char exe[MAX_PATH];',
+           '        InitializeCriticalSection(&lock);',
+           '        GetModuleFileNameA(NULL, exe, sizeof(exe));',
+           '        spy_line("== loaded into %s (pid %lu)", exe, GetCurrentProcessId());',
+           '    }',
            '    return TRUE;',
            '}', '']
 
@@ -155,6 +170,9 @@ def cmd_generate():
         src.append('typedef %s (*t_%s)(%s);' % (ret, name, ', '.join(args) or 'void'))
         src.append('__declspec(dllexport) %s %s(%s) {' % (ret, name, params))
         src.append('    static t_%s fn; if (!fn) fn = (t_%s)sym("%s");' % (name, name, name))
+        if kind == 'quiet':
+            src.append('    { static long once; if (!InterlockedExchange(&once, 1))')
+            src.append('        spy_line("%s: first call"); }' % name)
         if kind == 'payload':
             src.append('    if (a2 && a3 > 0) {')
             src.append('        char hex[3 * 256 + 8]; int i, n = a3 > 256 ? 256 : a3;')
@@ -262,9 +280,13 @@ def cmd_install():
     mine = os.path.join(HERE, '5868USB.dll')
     if not os.path.isfile(mine):
         raise SystemExit("build it first")
-    if os.path.isfile(KEPT):
-        raise SystemExit("already installed - uninstall first")
     import shutil
+    if os.path.isfile(KEPT):
+        # already installed: just refresh our copy, the original stays put
+        shutil.copy2(mine, REAL)
+        print("refreshed the spy in place; the original is still %s" % KEPT)
+        print("Restart Valeton Suite for it to take effect.")
+        return
     os.rename(REAL, KEPT)
     shutil.copy2(mine, REAL)
     print("installed. The original is %s" % KEPT)
