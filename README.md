@@ -285,6 +285,79 @@ image; painting over it destroys sound with no other symptom. Audio has that
 structure at a period of two bytes, a picture at three, and whichever period
 explains the data better settles it.
 
+### `tools/nam2namb.py`
+
+The GP-150 does not read `.nam`. Valeton Suite converts a capture into a
+**`.namb`** — a binary NAM, magic `BMAN` — and that is what reaches the pedal.
+The conversion is exported from Suite's own `assets/5868USB.dll` as plain C, so
+it can be driven directly:
+
+```c
+const char *convertNamToNambAtPath(const char *in, const char *out, double slim);
+const char *convertNamToNambWithSlim(const char *in, double slim);
+const char *convertNamToNamb(const char *in);
+const char *getLastNamToNambError(void);
+```
+
+Captures people download today (TONE3000, NAM 0.7.0) are **SlimmableContainers**:
+one file holding the same amp trained at several widths, each submodel tagged
+with a `max_value`. `slim` only picks one of them. That is the whole of the
+vendor's optimisation, and it says nothing about what the choice costs — which
+is the part this adds.
+
+```
+nam2namb.py info    <file.nam>                  submodels, cost, sizes
+nam2namb.py check   <file.nam> [--wav di.wav]   ESR of each submodel
+nam2namb.py convert <file.nam> [-o out.namb] [--slim F]
+nam2namb.py batch   <dir> [-o outdir] [--slim F]
+nam2namb.py namb    <file.namb>                 header of a converted file
+```
+
+A typical TONE3000 capture holds a 3-channel and an 8-channel submodel of the
+same amp:
+
+```
+slim   channels MAC/samp  namb     M7 load   ESR vs best
+<=0.5  3        1731      7.8 KB   14%       0.0026  (-25.9 dB)
+<=1    8        11776     47.9 KB  94%       reference
+```
+
+`M7 load` is the model's multiply-accumulates per sample against a 600 MHz
+Cortex-M7 retiring roughly one per cycle at 48 kHz — an estimate, but a decisive
+one: the wide submodel would need most of the core on its own, so `slim 0` and
+the narrow submodel is not a compromise the tool invents, it is the only one
+that runs. `check` says what that costs: measured over Suite's own DI, a clean
+amp loses 0.0026 ESR and a high-gain lead patch 0.0115, which is the expected
+shape — the more distortion, the harder it compresses.
+
+ESR is measured by **running both models**. The WaveNet forward pass is
+implemented here in numpy, and it is not a guess: the weight layout it assumes
+reproduces the exact weight count of every submodel in a file (1871 for a
+3-channel model, 12146 for an 8-channel one, to the weight), and the two
+independently trained submodels of one capture come out correlated at 0.996 —
+which only happens if both are being read correctly.
+
+The `.namb` container itself:
+
+```
+0x00  char[4]  "BMAN"
+0x04  u32      format version, 1
+0x08  u32      total file size
+0x0C  u32      offset of the weights, 496
+0x10  u32      number of weights
+0x14  u32      length of the config block at 0x50
+0x18  u32      checksum
+0x20  u8[3]    NAM version, 0.7.0
+0x23  u8       architecture id, 1 = WaveNet
+0x24  double   sample rate
+0x2C  double   loudness, LUFS
+0x50  ...      config block, then float32 weights at 0x1F0
+```
+
+The weights are the capture's own, float32, byte-identical to the JSON they came
+from — the conversion is a repack plus a submodel choice, not a refit. (The
+*SnapTone* path in the same library is a refit, and a different thing entirely.)
+
 ### `tools/rt_analyze.py`
 
 Sets Ghidra up for the GP-150's SoC. Needs PyGhidra and `GHIDRA_INSTALL_DIR`.
