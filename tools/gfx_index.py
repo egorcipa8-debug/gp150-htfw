@@ -257,6 +257,27 @@ def looks_like_picture(buf, blob):
     return grade(buf, blob) != 'junk'
 
 
+def compare(stock, other):
+    """Descriptors present in `stock` whose twelve header bytes no longer match
+    in `other`. A build that painted over an image without going through the
+    index does this, and the pedal notices: it draws colour static where the
+    icons were."""
+    return [b for b in scan(stock)
+            if bytes(other[b.hdr:b.hdr + HDR]) != bytes(stock[b.hdr:b.hdr + HDR])]
+
+
+def restore(stock, other):
+    """Put every damaged descriptor back, from a stock payload of the same
+    build. Only the twelve header bytes are copied - the pictures, whatever has
+    been done to them, are left exactly as they are."""
+    out = bytearray(other)
+    n = 0
+    for b in compare(stock, other):
+        out[b.hdr:b.hdr + HDR] = stock[b.hdr:b.hdr + HDR]
+        n += 1
+    return bytes(out), n
+
+
 # --- CLI ------------------------------------------------------------------
 
 def _payload(path):
@@ -296,6 +317,60 @@ def cmd_list(path, show_all=False):
                   % (r['delta'], r['count'], r['start'], r['end']))
 
 
+def cmd_check(path, stock_path):
+    fw, body = _payload(path)
+    _sfw, stock = _payload(stock_path)
+    if len(stock) != len(body):
+        raise SystemExit("those two payloads are different sizes - %d against "
+                         "%d - so they are not the same build"
+                         % (len(stock), len(body)))
+    bad = compare(stock, body)
+    total = len(scan(stock))
+    if not bad:
+        print("all %d descriptors intact" % total)
+        return 0
+    print("%d of %d descriptors have been overwritten:" % (len(bad), total))
+    for b in bad[:12]:
+        print("  0x%06X  %4dx%-4d" % (b.hdr, b.w, b.h))
+    if len(bad) > 12:
+        print("  ... and %d more" % (len(bad) - 12))
+    print("")
+    print("The firmware reads those twelve bytes. Repair with:")
+    print("  gfx_index.py repair <damaged.bin> <stock.bin> <out.bin>")
+    return 1
+
+
+def cmd_repair(path, stock_path, out):
+    import struct as _s
+    import htfw_tool
+    fw, body = _payload(path)
+    _sfw, stock = _payload(stock_path)
+    fixed, n = restore(stock, body)
+    if not n:
+        print("nothing to repair - every descriptor already matches")
+        return 0
+    blob = bytearray(fw.blob)
+    if fw.packed:
+        if htfw_tool.lzodll is None:
+            raise SystemExit("this image is LZO-packed and Valeton Suite's "
+                             "minilzo_plugin.dll was not found; repair it in "
+                             "Studio instead, which repacks")
+        comp = htfw_tool.lzodll.compress(fixed)
+        tail = _s.pack('<I', len(fixed)) + comp
+        head = bytearray(fw.blob[:fw.pack_off])
+    else:
+        tail = fixed
+        head = bytearray(fw.blob[:fw.payload])
+    for sec in fw.sections:
+        crc = htfw_tool.crc16_modbus(fixed[sec.off:sec.off + sec.len])
+        _s.pack_into('>H', head, sec.rec, crc)
+    _s.pack_into('<I', head, 0x24, len(fixed))
+    _s.pack_into('<I', head, 8, len(head) + len(tail))
+    open(out, 'wb').write(htfw_tool.seal(bytes(head) + tail))
+    print("%d descriptors restored -> %s" % (n, out))
+    return 0
+
+
 def cmd_dump(path, outdir):
     import os
     fw, body = _payload(path)
@@ -316,6 +391,10 @@ def main(argv):
         return cmd_list(argv[1], '--all' in argv)
     if len(argv) == 3 and argv[0] == 'dump':
         return cmd_dump(argv[1], argv[2])
+    if len(argv) == 3 and argv[0] == 'check':
+        return cmd_check(argv[1], argv[2])
+    if len(argv) == 4 and argv[0] == 'repair':
+        return cmd_repair(argv[1], argv[2], argv[3])
     print(__doc__.strip().splitlines()[0])
     print("\n  gfx_index.py list <fw.bin> [--all]     the index, one line per image"
           "\n  gfx_index.py dump <fw.bin> <dir>       write every image as a PNG")

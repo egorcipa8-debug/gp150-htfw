@@ -161,6 +161,46 @@ def test_gif(body):
     check("putting it back reproduces the payload", bytes(patched) == body)
 
 
+def test_bulk_edits(path, body):
+    """The bug this exists for: a bulk edit that paints over the twelve-byte
+    descriptors. The firmware reads them, and a build that lost ninety of them
+    ran fine and drew colour static where every icon should be."""
+    print("bulk edits")
+    try:
+        sys.path.insert(0, os.path.join(HERE, '..', 'studio'))
+        import server as studio
+    except Exception as e:                            # noqa: BLE001
+        check("Studio imports", False, str(e))
+        return
+    try:
+        from PIL import Image
+    except ImportError:
+        return
+    pr = studio.Project()
+    pr.load(path)
+    check("Studio reads the same index", len(pr.images) == len(gfx_index.scan(body)),
+          "%d images" % len(pr.images))
+    tex = Image.new('RGB', (16, 16))
+    for y in range(16):
+        for x in range(16):
+            tex.putpixel((x, y), (x * 16, y * 16, 128))
+    res = pr.apply_texture(tex, mode='replace', keep_alpha=True, fit='stretch')
+    check("a texture over everything writes something",
+          res['pixels'] > 100000,
+          "%d images, %d pixels, %d skipped as unsafe"
+          % (res['regions'], res['pixels'], res.get('skipped', 0)))
+    bad = gfx_index.compare(body, bytes(pr.body))
+    check("and leaves every descriptor intact", not bad,
+          "%d images still indexed" % len(gfx_index.scan(bytes(pr.body)))
+          if not bad else "%d descriptors overwritten" % len(bad))
+    damaged = bytearray(pr.body)
+    hdr = pr.images[3]['hdr']
+    damaged[hdr:hdr + 12] = bytes(12)
+    fixed, n = gfx_index.restore(body, bytes(damaged))
+    check("and a damaged one can be put back", n == 1 and
+          gfx_index.compare(body, fixed) == [], "restored %d" % n)
+
+
 def test_packets():
     print("packets")
     hit = ht_packet.dll_table()
@@ -232,6 +272,7 @@ def main(argv):
         test_roundtrip(path, blob_sha)
         test_index(body)
         test_gif(body)
+        test_bulk_edits(path, body)
     test_packets()
     if len(argv) > 1:
         test_nam(argv[1])

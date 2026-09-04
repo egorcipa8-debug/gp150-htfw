@@ -843,3 +843,34 @@ so a smaller animation padded with zeros is valid — `gif_tool.py inject`, or
 Studio's Graphics tab, which shows it animated at the top of the index and takes
 a new one on a click. This also explains the largest of the four areas the region
 scanner reported as graphics and could never make sense of.
+
+---
+
+## 22. The image descriptors are load-bearing
+
+They are not documentation the firmware ignores. A build that painted a texture
+over whole regions - and so wrote through the twelve header bytes in front of 90
+of the 132 images - **booted, ran, played, and drew colour static where every
+icon should be**. Photographs of the pedal show it: the menus, the labels and the
+panels draw correctly, and each icon is a rectangle of noise.
+
+That settles what these blocks are for. The heap image is copied to SDRAM and
+something walks it by those headers; corrupt them and the walk goes off the
+rails, so the draw calls read pixels from wherever the broken chain points.
+
+Two consequences, both now enforced:
+
+- **No write path may touch a descriptor.** `Project._check_span()` refuses any
+  write that overlaps one, so replacing an image, drawing text, laying a texture
+  or swapping the animation cannot do this by accident, whatever offset is typed.
+- **A region write has to be cut around the images inside it.** The old bulk
+  edit skipped a region only when the *region's start* fell inside an indexed
+  block, and region 18 of V1.1.1 starts before twenty-three of them and runs
+  straight over the lot. Regions are now split into the gaps between blocks, in
+  whole rows so the pixel phase survives.
+
+`gfx_index.py check <fw.bin> <stock.bin>` reports damaged descriptors against a
+stock image of the same build, and `repair` copies the twelve bytes back without
+touching a pixel - the artwork edits, whatever they were, survive. The build in
+the photographs was repaired that way: 90 descriptors restored, vendor
+`checkCrc()` accepted, the blue theme intact.

@@ -619,6 +619,7 @@ class Project(object):
         sec = self.section_of(off)
         if sec is None or off + n > sec.off + sec.len:
             raise ValueError("image would cross a section boundary")
+        self._check_span(off, n, 'replacing that image')
         original = self.orig[off:off + n]
         self.body[off:off + n] = encode_image(im, w, h, original, preserve_alpha)
         self.edits += 1
@@ -654,6 +655,7 @@ class Project(object):
                    stroke_width=outline, stroke_fill=tuple(outline_color) + (255,))
         if preview:
             return im
+        self._check_span(off, n, 'writing that text')
         original = self.orig[off:off + n]
         self.body[off:off + n] = gfx_index.encode(im, w, h, original, keep_alpha)
         self.edits += 1
@@ -776,6 +778,7 @@ class Project(object):
                              "fewer frames or fewer colours"
                              % (len(data), g['len']))
         pad = bytes(g['len'] - len(data))
+        self._check_span(g['off'], g['len'], 'replacing the animation')
         self.body[g['off']:g['off'] + g['len']] = data + pad
         self.edits += 1
         return {'off': g['off'], 'used': len(data), 'room': g['len']}
@@ -835,6 +838,22 @@ class Project(object):
         self.scan_strings()
 
     # ---- build ---------------------------------------------------------
+    def protected(self):
+        """The 12 bytes in front of every indexed image. They are the heap's
+        own block headers and the firmware reads them: a build that wrote over
+        them booted, ran, and drew colour static where every icon should be.
+        Nothing here may write into one."""
+        return [(d['hdr'], d['hdr'] + gfx_index.HDR) for d in self.images]
+
+    def _check_span(self, off, n, what='that write'):
+        for a, b in self.protected():
+            if off < b and a < off + n:
+                raise ValueError(
+                    "%s would run over the image descriptor at 0x%06X. Those "
+                    "twelve bytes carry the width, the height and the block's "
+                    "address, and the firmware needs them - overwriting them "
+                    "is what turns the icons into static." % (what, a))
+
     def targets(self, scope=None):
         """Every asset a bulk edit should reach, as (label, off, w, h).
 
@@ -843,18 +862,30 @@ class Project(object):
         inside it nothing says where one picture ends.
         """
         out = []
-        covered = []
+        blocks = sorted((d['hdr'], d['off'] + d['size']) for d in self.images)
         for d in self.images:
             if d['grade'] == 'junk':
                 continue
             out.append(('image %d' % d['id'], d['off'], d['w'], d['h']))
-            covered.append((d['hdr'], d['off'] + d['size']))
+        # A region can start before an indexed block and run straight over it -
+        # region 18 of V1.1.1 covers twenty-three of them - so the overlap has
+        # to be cut out rather than tested for at the start. What is left of the
+        # region is emitted in whole rows, which keeps the pixel phase.
         for r in self.regions:
-            if any(a <= r['off'] < b for a, b in covered):
-                continue
-            rows = (r['end'] - r['off']) // (r['width'] * 3)
-            if rows > 0:
-                out.append(('region %d' % r['id'], r['off'], r['width'], rows))
+            stride = r['width'] * 3
+            pos = r['off']
+            for a, b in blocks:
+                if b <= pos or a >= r['end']:
+                    continue
+                if a > pos:
+                    rows = (a - pos) // stride
+                    if rows >= 4:
+                        out.append(('region %d' % r['id'], pos, r['width'], rows))
+                pos = max(pos, b)
+            if pos < r['end']:
+                rows = (r['end'] - pos) // stride
+                if rows >= 4:
+                    out.append(('region %d' % r['id'], pos, r['width'], rows))
         if scope:
             out = [t for i, t in enumerate(out) if i in scope]
         return out
@@ -889,12 +920,18 @@ class Project(object):
             raise ValueError("nothing to apply it to")
         done = 0
         pixels = 0
+        skipped = 0
         for _label, off, w, h in targets:
             n = w * h * 3
             if off < 0 or off + n > len(self.body):
                 continue
             sec = self.section_of(off)
             if sec is None or off + n > sec.off + sec.len:
+                continue
+            try:
+                self._check_span(off, n)
+            except ValueError:
+                skipped += 1
                 continue
             tex = self._fit_texture(im, w, h, fit)
             a = _np.frombuffer(bytes(self.body[off:off + n]),
@@ -925,7 +962,8 @@ class Project(object):
             done += 1
             pixels += w * h
         self.edits += done
-        return {'regions': done, 'targets': len(targets), 'pixels': pixels}
+        return {'regions': done, 'targets': len(targets), 'pixels': pixels,
+                'skipped': skipped}
 
     @staticmethod
     def _fit_texture(im, w, h, fit):
