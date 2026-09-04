@@ -26,6 +26,11 @@ except ImportError:                                   # pragma: no cover
 LINE = re.compile(r'^(\d\d:\d\d:\d\d\.\d+)\s+send cmd=0x([0-9A-Fa-f]{2})\s+'
                   r'len=(-?\d+)\s+flag=(\d+)\s+(.*)$')
 
+# the winmm capture: raw MIDI in both directions
+MIDI = re.compile(r'^(\d\d:\d\d:\d\d\.\d+)\s+(out sysex|in  sysex|out short)\s+'
+                  r'len=(\d+)\s+(.*)$')
+SHORT = re.compile(r'^(\d\d:\d\d:\d\d\.\d+)\s+out short\s+(.*)$')
+
 
 def read(path):
     out = []
@@ -43,7 +48,68 @@ def read(path):
     return out
 
 
+def read_midi(path):
+    """The winmm capture: every SysEx, both directions."""
+    out = []
+    with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+        for line in fh:
+            m = MIDI.match(line.strip())
+            if not m:
+                continue
+            t, what, ln, rest = m.groups()
+            hexpart = rest.replace('...', '').strip()
+            try:
+                data = bytes.fromhex(hexpart)
+            except ValueError:
+                data = b''
+            out.append({'time': t, 'dir': 'in' if what.startswith('in') else 'out',
+                        'len': int(ln), 'data': data, 'truncated': '...' in rest})
+    return out
+
+
+def cmd_midi(path):
+    msgs = read_midi(path)
+    if not msgs:
+        print("no MIDI lines in %s" % path)
+        return 1
+    print("%d SysEx messages, %s to %s"
+          % (len(msgs), msgs[0]['time'], msgs[-1]['time']))
+    seen = collections.Counter()
+    rows = []
+    for m in msgs:
+        cmd = index = payload = None
+        ok = False
+        if ht_packet is not None and m['data'][:1] == b'\xF0' and not m['truncated']:
+            try:
+                cmd, index, payload, ok = ht_packet.decode(m['data'])
+            except ValueError:
+                pass
+        seen[(m['dir'], cmd)] += 1
+        rows.append((m, cmd, index, payload, ok))
+    print()
+    print("%-4s %-6s %-7s %s" % ("dir", "cmd", "count", "what the payload starts with"))
+    for (d, cmd), n in sorted(seen.items(), key=lambda kv: (-kv[1], str(kv[0]))):
+        first = next((r for r in rows if r[0]['dir'] == d and r[1] == cmd), None)
+        head = (first[3][:10].hex(' ') if first and first[3] else
+                (first[0]['data'][:10].hex(' ') if first else ''))
+        print("%-4s %-6s %-7d %s"
+              % (d, ('0x%02X' % cmd) if cmd is not None else 'raw', n, head))
+    print()
+    print("first twenty messages:")
+    for m, cmd, index, payload, ok in rows[:20]:
+        if cmd is None:
+            print("  %s %-3s len=%-6d %s" % (m['time'], m['dir'], m['len'],
+                                             m['data'][:20].hex(' ')))
+        else:
+            print("  %s %-3s cmd=0x%02X index=%-3d payload=%-4d crc=%s  %s"
+                  % (m['time'], m['dir'], cmd, index, len(payload),
+                     'ok' if ok else 'BAD', payload[:16].hex(' ')))
+    return 0
+
+
 def cmd_summary(path):
+    if 'midi' in os.path.basename(path):
+        return cmd_midi(path)
     msgs = read(path)
     if not msgs:
         print("no send lines in %s - was anything captured?" % path)
@@ -109,6 +175,8 @@ def main(argv):
         return cmd_frames(path)
     if '--cmd' in argv:
         return cmd_one(path, int(argv[argv.index('--cmd') + 1], 0))
+    if '--midi' in argv:
+        return cmd_midi(path)
     return cmd_summary(path)
 
 
