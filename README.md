@@ -3,14 +3,17 @@
 Tools and notes for Valeton's **HTFW** firmware container, worked out from the
 GP-150 images. The container is shared across the GP-5 / GP-50 / GP-150 family.
 
-Three things here are, as far as we can tell, not published anywhere else:
+Several things here are, as far as we can tell, not published anywhere else:
 
 - **the region checksum algorithm** — CRC-16/MODBUS, stored big-endian;
 - **the payload packing** — LZO1X with a 4-byte length prefix, which is what makes
   GP-150 **V1.1.1 and later editable at all**;
 - **the image descriptors** — a 12-byte header before every stored image, carrying
   its width and height, so the artwork does not have to be found by guessing at
-  row strides. It also settles the pixel order, which these notes had backwards.
+  row strides. It also settles the pixel order, which these notes had backwards;
+- **the NAM path** — the pedal reads `.namb`, not `.nam`, and its magic is in the
+  firmware, so the RT1064 runs the capture's own WaveNet;
+- **the boot animation** — 448 KB of what read as noise is a 320x240 GIF.
 
 Both are verified byte-exactly, not inferred. Prior work by
 [drewmerc302/valeton-gp50](https://github.com/drewmerc302/valeton-gp50) documents
@@ -564,10 +567,20 @@ command that reaches it, so a bad application image is recoverable.
   code, but no longer for everything: the image descriptors (`tools/gfx_index.py`)
   carry SDRAM addresses, and along each run of chained blocks `addr - file offset`
   is constant, so those parts of section `b` are a heap image copied to SDRAM
-  verbatim. The delta changes between runs, so it is not one mapping for the whole
-  section, and none of the recovered deltas places the `0x8000xxxx` veneer targets
-  on real code. The flash-resident bootstrap still calls into `0x8000xxxx` through
-  a `MOVW/MOVT/BX` table whose destinations are unaccounted for.
+  verbatim — the first linear file→`0x80000000` mapping demonstrated here. The
+  delta changes between runs, so it is not one mapping for the whole section.
+  The 73 `0x8000xxxx` veneer targets in the bootstrap were swept again against
+  every possible base with a Thumb-prologue test, independently of the earlier
+  attempt: best 8 of 73 against 4.4 expected by chance, which is noise. So that
+  half stands where it did.
+- **Where the update protocol's block index wraps.** `index` is one byte and a
+  section runs to six figures of blocks (`tools/ht_packet.py plan`), so the
+  counter must wrap; nothing in the library's code says where, and it would take
+  one captured update to settle.
+- **About 13% of the artwork carries no descriptor** — four areas, the largest
+  76 KB. They decode correctly once the byte phase is right, so they are real
+  pictures; they simply sit outside the heap runs the descriptors cover, and
+  nothing has been found that indexes them.
 - Region `g` is **the JieLi Bluetooth SoC's firmware** and region `h` is the PD
   controller's — confirmed by the updater itself, which runs a second
   "BT And PD Updating" phase after the main firmware phase. Neither targets the
