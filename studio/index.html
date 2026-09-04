@@ -48,6 +48,8 @@ main{padding:16px}
 .tile img{display:block;image-rendering:pixelated;background:
   repeating-conic-gradient(#303030 0 25%,#242424 0 50%) 50%/12px 12px}
 .tile .n{color:var(--dim);font-size:11px;margin-top:4px}
+.tile.doubt{opacity:.55;border-style:dashed}
+.tile.doubt:hover{opacity:1}
 .tile.dirty{border-color:var(--good)}
 .tile.dirty .n{color:var(--good)}
 table{width:100%;border-collapse:collapse}
@@ -128,6 +130,7 @@ dialog::backdrop{background:#0009}
             <option value="1">1x</option><option value="2" selected>2x</option><option value="3">3x</option>
           </select>
         </label>
+        <label title="Blocks the loader allocated but never filled decode as noise. They are graded, not dropped."><input type="checkbox" id="doubtful" onchange="drawTiles()"> show doubtful</label>
         <label><input type="checkbox" id="palpha" checked> keep alpha byte</label>
         <div class="spacer"></div>
         <button onclick="assetDlg()">Suite artwork…</button>
@@ -410,12 +413,14 @@ async function drawCurated(){
       <b>index + everything the scan finds</b> — and expect to sift it.</div>`;
     return;
   }
-  d.items.forEach(ic=>{
+  const all=$('#doubtful').checked;
+  const items=d.items.filter(ic=>all||ic.grade==='art'||ic.grade===undefined);
+  items.forEach(ic=>{
     const el=document.createElement('div');
-    el.className='tile'+(DIRTY.has(ic.off)?' dirty':'');
+    el.className='tile'+(DIRTY.has(ic.off)?' dirty':'')+(ic.grade&&ic.grade!=='art'?' doubt':'');
     el.innerHTML=`<img src="/api/image?off=${ic.off}&w=${ic.w}&h=${ic.h}&scale=${z}&t=${Date.now()}"
                        width="${ic.w*z}" height="${ic.h*z}">
-                  <div class="n">${ic.w}&times;${ic.h}${ic.filled===false?' · unfilled':''}</div>`;
+                  <div class="n">${ic.w}&times;${ic.h}${ic.grade&&ic.grade!=='art'?' · '+ic.grade:''}</div>`;
     el.onclick=e=>{
       $('#off').value=ic.off.toString(16).toUpperCase();
       $('#w').value=ic.w; $('#h').value=ic.h;
@@ -426,9 +431,10 @@ async function drawCurated(){
             +'click: replace from a file   ·   shift+click: pick Suite artwork';
     g.appendChild(el);
   });
-  const filled=d.items.filter(x=>x.filled!==false).length;
-  log(`${filled} images from the firmware index`+
-      (d.items.length>filled?`, ${d.items.length-filled} unfilled blocks`:''),'g');
+  const art=d.items.filter(x=>x.grade==='art').length;
+  const rest=d.items.length-art;
+  log(`${items.length} shown of ${d.items.length} indexed`+
+      (rest&&!all?` — ${rest} doubtful or never filled, tick “show doubtful” for them`:''),'g');
 }
 
 /* The default view: every image the scan finds, everywhere in the firmware, on
@@ -443,12 +449,14 @@ async function drawGallery(){
   catch(_){ g.innerHTML='<div class="hint">scan failed</div>'; return }
   g.innerHTML='';
   if(!d.items.length){ g.innerHTML='<div class="hint">nothing found</div>'; return }
-  d.items.forEach(ic=>{
+  const all=$('#doubtful').checked;
+  const items=d.items.filter(ic=>all||ic.grade==='art'||ic.grade===undefined);
+  items.forEach(ic=>{
     const el=document.createElement('div');
-    el.className='tile'+(DIRTY.has(ic.off)?' dirty':'');
+    el.className='tile'+(DIRTY.has(ic.off)?' dirty':'')+(ic.grade&&ic.grade!=='art'?' doubt':'');
     el.innerHTML=`<img src="/api/image?off=${ic.off}&w=${ic.w}&h=${ic.h}&scale=${z}&t=${Date.now()}"
                        width="${ic.w*z}" height="${ic.h*z}">
-                  <div class="n">${ic.w}&times;${ic.h}${ic.filled===false?' · unfilled':''}</div>`;
+                  <div class="n">${ic.w}&times;${ic.h}${ic.grade&&ic.grade!=='art'?' · '+ic.grade:''}</div>`;
     el.onclick=e=>{
       $('#off').value=ic.off.toString(16).toUpperCase();
       $('#w').value=ic.w; $('#h').value=ic.h;
@@ -459,7 +467,7 @@ async function drawGallery(){
             +'click: replace from a file   ·   shift+click: pick Suite artwork';
     g.appendChild(el);
   });
-  log(`${d.items.length} images — ${d.indexed||0} from the index, `+
+  log(`${items.length} shown of ${d.items.length} — ${d.indexed||0} from the index, `+
       `the rest from the scan across ${d.regions} regions`,'g');
 }
 

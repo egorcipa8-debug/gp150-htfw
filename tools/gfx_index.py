@@ -27,8 +27,8 @@ Descriptors are the allocator's, not a resource table's: `addr` is an SDRAM
 address, consecutive blocks are chained (`hdr + 12 + size` is the next `hdr`),
 and the file-to-SDRAM delta is constant along a run - this area of section `b` is
 a heap image copied to SDRAM verbatim. Blocks that were allocated but never
-filled are in it too, which is why a handful of entries decode as noise;
-`looks_like_picture()` marks them rather than hiding them.
+filled are in it too, which is why some entries decode as noise; `grade()` sorts
+them into artwork, doubtful and never-filled rather than hiding anything.
 
 Pixel format, settled against a descriptor's own geometry (see FINDINGS §17):
 
@@ -41,6 +41,7 @@ that reads the same bytes one position over and tints everything olive.
 
 import struct
 import sys
+import zlib
 
 try:
     import numpy as _np
@@ -211,28 +212,49 @@ def encode(im, w, h, original=None, preserve_alpha=False):
     return bytes(out)
 
 
-def smoothness(buf, blob):
-    """Mean difference between neighbouring pixels, in RGB565 steps. Artwork
-    lands between roughly 0.1 and 5; a block the loader allocated but never
-    filled is either flat 0 or well above that."""
+def grade(buf, blob):
+    """'art', 'unsure' or 'junk' - is this block a picture at all?
+
+    The descriptors are the allocator's, so blocks that were allocated and never
+    filled are in the file with perfectly good geometry and leftover bytes
+    inside. Two things separate those from artwork, and it takes both:
+
+    * **Noise does not compress.** Artwork is flat runs and a small palette;
+      deflate takes it to under a tenth. Random leftovers stay near a quarter.
+    * **Stale data is streaky.** Its rows are long runs of one value and each
+      row is unrelated to the one above, so the vertical difference dwarfs the
+      horizontal one. Artwork is coherent both ways, at roughly the same scale.
+
+    Neither is a proof, which is why there is a middle bucket: a gradient bar
+    or a slider track is legitimately banded, and reads as anisotropic as junk
+    does. On GP-150 V1.1.1 this calls 92 of the 132 blocks artwork with two
+    stragglers, and puts every genuinely broken one in the other two buckets.
+    """
     if _np is None:
-        return None
+        return 'art'
     n = blob.w * blob.h * 3
-    a = _np.frombuffer(bytes(buf[blob.off:blob.off + n]), dtype=_np.uint8)
-    a = a.reshape(blob.h, blob.w, 3).astype(_np.uint16)
-    c = (a[:, :, 0] | (a[:, :, 1] << 8)).astype(_np.int32)
-    rgb = _np.dstack([(c >> 11) & 0x1F, ((c >> 5) & 0x3F) >> 1, c & 0x1F])
-    rgb = rgb.astype(_np.float32)
-    dx = _np.abs(_np.diff(rgb, axis=1)).mean() if blob.w > 1 else 0.0
-    dy = _np.abs(_np.diff(rgb, axis=0)).mean() if blob.h > 1 else 0.0
-    return float((dx + dy) / 2)
+    raw = bytes(buf[blob.off:blob.off + n])
+    if len(raw) < n:
+        return 'junk'
+    comp = len(zlib.compress(raw, 6)) / float(n)
+    if comp > 0.25:
+        return 'junk'
+    a = _np.frombuffer(raw, dtype=_np.uint8).reshape(blob.h, blob.w, 3)
+    c = (a[:, :, 0].astype(_np.uint32)
+         | (a[:, :, 1].astype(_np.uint32) << 8)).astype(_np.int32)
+    rgb = _np.dstack([(c >> 11) & 0x1F, ((c >> 5) & 0x3F) >> 1, c & 0x1F,
+                      a[:, :, 2] >> 3]).astype(_np.float32)
+    dv = float(_np.abs(_np.diff(rgb, axis=0)).mean()) if blob.h > 1 else 0.0
+    dh = float(_np.abs(_np.diff(rgb, axis=1)).mean()) if blob.w > 1 else 0.0
+    if dv > 3.0 * dh and dv > 1.5:
+        return 'junk'
+    if dv > 2.2 * dh and dv > 0.6:
+        return 'unsure'
+    return 'art'
 
 
 def looks_like_picture(buf, blob):
-    s = smoothness(buf, blob)
-    if s is None:
-        return True
-    return 0.02 <= s <= 5.0
+    return grade(buf, blob) != 'junk'
 
 
 # --- CLI ------------------------------------------------------------------
@@ -252,16 +274,20 @@ def cmd_list(path, show_all=False):
     blobs = scan(body)
     print("%-9s %-9s %-9s %-9s %s" % ("desc", "pixels", "size", "sdram", "geometry"))
     shown = 0
+    tally = {'art': 0, 'unsure': 0, 'junk': 0}
     for b in blobs:
-        ok = looks_like_picture(body, b)
-        if not ok and not show_all:
+        g = grade(body, b)
+        tally[g] += 1
+        if g != 'art' and not show_all:
             continue
         shown += 1
         print("0x%06X  0x%06X  %7d  %08X  %4dx%-4d%s"
               % (b.hdr, b.off, b.size, b.addr, b.w, b.h,
-                 "" if ok else "   (unfilled)"))
+                 "" if g == 'art' else "   (%s)" % g))
     print("\n%d images, %d shown, %.2f MB of pixels"
           % (len(blobs), shown, sum(b.size for b in blobs) / 1e6))
+    print("%d artwork, %d doubtful, %d never filled"
+          % (tally['art'], tally['unsure'], tally['junk']))
     rs = [r for r in runs(blobs) if r['count'] >= 3]
     if rs:
         print("\nheap runs (file offset -> SDRAM is constant inside each):")
@@ -277,7 +303,8 @@ def cmd_dump(path, outdir):
         os.makedirs(outdir)
     n = 0
     for b in scan(body):
-        tag = '' if looks_like_picture(body, b) else '_unfilled'
+        g = grade(body, b)
+        tag = '' if g == 'art' else '_' + g
         name = '%06X_%dx%d%s.png' % (b.off, b.w, b.h, tag)
         decode(body, b.off, b.w, b.h).save(os.path.join(outdir, name))
         n += 1

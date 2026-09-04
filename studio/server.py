@@ -622,16 +622,19 @@ class Project(object):
         for b in blobs:
             d = b.as_dict()
             d['id'] = len(out)
-            d['filled'] = gfx_index.looks_like_picture(self.orig, b)
+            d['grade'] = gfx_index.grade(self.orig, b)
+            d['filled'] = d['grade'] != 'junk'
             d['name'] = '%dx%d @0x%06X' % (b.w, b.h, b.off)
             out.append(d)
         self.images = out
 
     def curated(self):
-        """The indexed images - the ones that decode as artwork first."""
-        good = [d for d in self.images if d['filled']]
-        rest = [d for d in self.images if not d['filled']]
-        return good + rest
+        """The indexed images, artwork first. The descriptors are the
+        allocator's, so blocks it never filled are in the file with perfectly
+        good geometry and leftover bytes inside; they are graded, not dropped,
+        and Studio keeps them behind a toggle."""
+        order = {'art': 0, 'unsure': 1, 'junk': 2}
+        return sorted(self.images, key=lambda d: (order.get(d['grade'], 3), d['off']))
 
     def detect_icons(self, off, end, w, min_h=6, gap=1):
         """Split a graphics region into individual images.
@@ -857,7 +860,12 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         ic['region'] = r['id']
                         ic['id'] = len(out)
-                        ic['filled'] = True
+                        blob = gfx_index.Blob(ic['off'] - gfx_index.HDR,
+                                              ic['w'], ic['h'],
+                                              ic['w'] * ic['h'] * 3, 0x80000000,
+                                              gfx_index.FMT_RGB565A)
+                        ic['grade'] = gfx_index.grade(PROJECT.body, blob)
+                        ic['filled'] = ic['grade'] != 'junk'
                         out.append(ic)
                 return self._json({'items': out, 'regions': len(PROJECT.regions),
                                    'indexed': len(PROJECT.images)})

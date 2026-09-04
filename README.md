@@ -110,9 +110,12 @@ no network access of any kind.
 - **Graphics** — opens on **images (from the firmware index)**. Every stored image
   is preceded by a 12-byte descriptor carrying its width and height, so the list
   is *read out of the file*, not guessed: 132 images on GP-150 V1.1.1, each one
-  framed correctly with nothing to nudge. Blocks the loader allocated but never
-  filled decode as noise; they are marked *unfilled* rather than hidden. Click a
-  picture to replace it, shift+click to pick from Valeton Suite's own artwork.
+  framed correctly with nothing to nudge. The descriptors are the allocator's,
+  so blocks it never filled are in the file too, with perfectly good geometry
+  and leftovers inside; they are graded — 94 artwork, 3 doubtful, 35 never
+  filled — and the view opens on the artwork, with **show doubtful** for the
+  rest. Click a picture to replace it, shift+click to pick from Valeton Suite's
+  own artwork.
   *index + everything the scan finds* adds the artwork that carries no
   descriptor, recovered the old way — per-region width estimation, which is what
   the offset/width/height controls and the strip and tiles views are still there
@@ -304,8 +307,15 @@ DST is red, the AMP tile orange, VOL green, NAM purple.
 The descriptors are the allocator's, not a resource table's — blocks chain
 (`hdr + 12 + size` is the next `hdr`), and along a run `addr - file offset` is
 constant, so this part of section `b` is a heap image copied to SDRAM verbatim.
-That also means blocks that were allocated and never filled sit in the file:
-`looks_like_picture()` marks them *unfilled* instead of hiding them.
+That also means blocks that were allocated and never filled sit in the file with
+perfectly good geometry and leftover bytes inside. `grade()` sorts them, on two
+signals that take both to be useful: **noise does not compress** (artwork goes
+under a tenth through deflate, leftovers stay near a quarter) and **stale data
+is streaky** (its rows are long runs and each row is unrelated to the one above,
+so the vertical difference dwarfs the horizontal one, where artwork is coherent
+both ways). On V1.1.1 that is 94 artwork, 3 doubtful, 35 never filled, with two
+stragglers in the artwork bucket — good enough for the default view to be clean
+and for nothing to be thrown away.
 
 ### `tools/gfx_tool.py`
 
