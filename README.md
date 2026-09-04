@@ -191,6 +191,42 @@ accepts the image, a device is actually reported, and `--yes` is given. Note tha
 `deviceStartBoot` is a stub in this build — it is literally `mov eax, -1; ret` —
 so there is no vendor call that puts the device into its bootloader.
 
+### `tools/ht_packet.py`
+
+The wire format, built rather than sent. Every host-to-device message is one
+SysEx frame around a four-byte header:
+
+```
+BUF  = [ crc8 ][ command ][ index ][ length ][ length payload bytes ]
+wire = F0, then for each byte of BUF: (b >> 4), (b & 0x0F), then F7
+```
+
+`crc8` is CRC-8/0x07, init 0, over the whole of BUF with its own slot zeroed;
+the nibble split is what keeps every byte under `0x80`. Read out of
+`5868USB.dll`'s own packet builder, and `verify` checks the table this file
+generates against the 256 bytes in the DLL — they match exactly.
+
+The firmware update turns out not to stream the file at all. `deviceStartUpdate`
+parses the container, LZO-decompresses the payload when the header says packed,
+recomputes every section's CRC-16/MODBUS and compares it big-endian against the
+stored value, then sends one message per section: payload `0x11, <section id>`
+followed by the whole section, split into blocks of **42 bytes** (19 in the
+compressed mode `setDeviceCompress` selects).
+
+```
+ht_packet.py verify                     table against the DLL's own
+ht_packet.py frame <cmd> <index> <hex>  build one frame
+ht_packet.py parse <hex>                take one apart
+ht_packet.py plan <fw.bin>              what an update would send
+```
+
+`plan` prints the schedule — for GP-150 V1.1.1, 191 240 frames of 94 bytes,
+17.6 MB on the wire for a 5 MB file — and stops there. **Nothing in this module
+opens a MIDI port.** Every field is read out of the vendor's code rather than
+invented, and none of it has been checked against a capture here; the one thing
+the code does not settle is where the one-byte block index wraps. The GP-50
+project's warning that guessed traffic wedged a pedal once stands.
+
 ### `tools/suite_link.py`
 
 Puts Studio one click away *inside* Valeton Suite, without rebuilding it.

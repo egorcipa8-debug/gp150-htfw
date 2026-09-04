@@ -761,3 +761,54 @@ one CRC-16 table - and the comparison assembles the result big-endian, matching
 
 The decompiled listings are Valeton's code however it is spelled, so they are
 not in this repository; `work/` is gitignored for them.
+
+---
+
+## 20. The wire format, out of the library rather than guessed
+
+Every host-to-device message is one SysEx frame around a four-byte header:
+
+```
+BUF  = [ crc8 ][ command ][ index ][ length ][ length payload bytes ]
+wire = F0, then for each byte of BUF: (b >> 4), (b & 0x0F), then F7
+```
+
+`crc8` is CRC-8, polynomial `0x07`, init 0, no reflection, no final xor, over the
+whole of BUF with its own slot held at zero. The nibble split is what keeps every
+byte under `0x80`, as SysEx requires.
+
+The builder is one function in `5868USB.dll` — a 4-byte header, the payload
+appended, the table stepped over the lot, the checksum written back into byte 0,
+then optionally the nibble split, then `0xF0 … 0xF7` in a two-line helper. Its
+CRC table sits at `0x180195910`, and `tools/ht_packet.py verify` checks the table
+it generates against those 256 bytes: **256 of 256 match**.
+
+This is the same format `drewmerc302/valeton-gp50` recovered from the macOS
+dylib and verified against 298 captured packets, so the two independent reads
+agree — theirs from a capture, this one from the Windows library's own code.
+
+### The firmware update, specifically
+
+`deviceStartUpdate` does not stream the file. It:
+
+1. parses the container and, if the header says packed, **LZO-decompresses the
+   payload in memory** — the vendor's loader does exactly what `htfw_tool.py`
+   does, which is another confirmation of §14;
+2. walks the section table and **recomputes each section's CRC-16/MODBUS**,
+   comparing it big-endian against the stored value, refusing the file on the
+   first mismatch — the same rule as §1, in Valeton's own code;
+3. builds one message per section whose payload is `0x11, <section id>` followed
+   by the whole section;
+4. splits that into blocks of **42 bytes** (`0x2A`), or **19** (`0x13`) when the
+   device has been put in the compressed mode `setDeviceCompress` selects, and
+   records `ceil(len / block)` as the section's block count.
+
+For GP-150 V1.1.1 that is 191 240 frames of 94 bytes — 17.6 MB on the wire for a
+5 MB file, which is what a nibble-split protocol costs.
+
+`tools/ht_packet.py plan` prints the whole schedule and the first frame of each
+section without opening a MIDI port. What the code does *not* settle is the
+width of the block counter: `index` is one byte and a section runs to six figures
+of blocks, so it must wrap, and where is a guess until someone captures a real
+update. Nothing here has been sent to a device; the GP-50 project's warning that
+guessed traffic wedged a pedal once stands.
