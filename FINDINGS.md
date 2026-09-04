@@ -951,3 +951,73 @@ panel fills, the blue background, the selection highlight - because the code
 that holds those constants is not in the file. `tools/thumb_patch.py` can
 rewrite a MOVW immediate anywhere it *is* in the file, which covers region `d`
 and the bootstrap, and is the tool for the day the rest turns up.
+
+---
+
+## 24. The editor protocol, off the wire
+
+The firmware could not be made to give it up (§23), and the vendor library turned
+out not to carry it either: Suite loads `5868USB.dll` and then, for everything
+except firmware updates and NAM conversion, never calls it. The MIDI goes
+straight from Dart to **winmm** - `flutter_midi_command_windows` is FFI, and
+there is no plugin DLL in the install to stand in front of. So the capture rig
+moved a layer down (`tools/spy/build_midi_spy.py`), and 876 frames later:
+
+### The frame
+
+```
+F0 7F <crc> [len16] [off16] [id_a] [id_b] <payload, nibble-encoded> F7
+```
+
+* **`crc` is CRC-8, polynomial 0x31, init 0x00, masked to seven bits.** It fits
+  in a SysEx data byte, it verifies on **876 of 876** captured frames, and the
+  table for that polynomial is in the firmware at payload `0x0331A8` - so this is
+  the device's own checksum, not a guess that happened to fit. (The *updater*
+  uses CRC-8/0x07 over a nibble-encoded buffer - a different protocol in the same
+  box, §20.)
+* `len16` and `off16` are 14-bit, two seven-bit halves, low first. In a reply
+  `len16` is the **whole object's size** and `off16` is where the chunk goes; in
+  a request both are zero and the arguments are in the payload.
+* `id_a`/`id_b` pair a reply to its request.
+* the payload is **nibble-encoded**, two wire bytes per byte, high nibble first.
+  A full chunk carries **119 bytes**, which is why offsets step by 119.
+
+A read request looks like this, and the five that follow it differ only in the
+offset and the sequence number:
+
+```
+00 00  03 06  02 05   01 00  5C 03  77  00 00 00
+ len    ?     id      ?      offset len
+                             = 476   = 119
+```
+
+### What comes back
+
+Reassembled, the transfers are the device's own data structures:
+
+| size | what it is |
+|---|---|
+| 1136 | a patch - the name sits at offset 0x34, `It's GP-150` |
+| 4012 | the largest object read on connect |
+| 2032 | another table |
+| 412 | the **User IR list** - twelve-byte name slots, `User IR 1`, `User IR 2`, … |
+| 408 | firmware version `V1.1.1` followed by floats |
+| 92 | a patch header with its name |
+| 16-48 | the small objects Suite reads to draw a list |
+
+Inside each payload there is a second layer, which the Dart side calls a data
+package: `01 <check> <len16 LE> 03 <type> <a a> <b b> <len16 LE> …`, where the
+repeated 16-bit values (`0x3011`, `0x3020`, `0x1042`, `0x2000`, `0x1010`) look
+like the addresses of the object and of whoever asked for it. That layer is only
+half read.
+
+### What it does not have
+
+Nothing in the capture reads **memory**. Every request names an object by id and
+an offset *within that object*; there is no command that says "give me the bytes
+at this address". So this route does not, by itself, reach the interface code in
+SDRAM. What it does give is the pedal's data: patches, names, IR lists, version -
+readable and, with the same frame format, writable.
+
+`tools/ht_sysex.py` decodes and builds these frames, reassembles a capture into
+objects, and writes them out. It opens no MIDI port.
