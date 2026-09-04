@@ -854,8 +854,12 @@ class Project(object):
                     "address, and the firmware needs them - overwriting them "
                     "is what turns the icons into static." % (what, a))
 
-    def targets(self, scope=None):
+    def targets(self, scope=None, ids=None, regions=True):
         """Every asset a bulk edit should reach, as (label, off, w, h).
+
+        `ids` picks indexed images by their own id - that is what the screen
+        editor sends when you have selected two icons and want only those
+        recoloured. `regions` includes the artwork with no descriptor.
 
         The indexed images first, because those are exact, then whatever the
         region scan turns up outside them - a region is taken whole, since
@@ -863,6 +867,12 @@ class Project(object):
         """
         out = []
         blocks = sorted((d['hdr'], d['off'] + d['size']) for d in self.images)
+        if ids is not None:
+            ids = set(int(i) for i in ids)
+            for d in self.images:
+                if d['id'] in ids:
+                    out.append(('image %d' % d['id'], d['off'], d['w'], d['h']))
+            return out
         for d in self.images:
             if d['grade'] == 'junk':
                 continue
@@ -871,7 +881,7 @@ class Project(object):
         # region 18 of V1.1.1 covers twenty-three of them - so the overlap has
         # to be cut out rather than tested for at the start. What is left of the
         # region is emitted in whole rows, which keeps the pixel phase.
-        for r in self.regions:
+        for r in (self.regions if regions else []):
             stride = r['width'] * 3
             pos = r['off']
             for a, b in blocks:
@@ -891,7 +901,7 @@ class Project(object):
         return out
 
     def apply_texture(self, im, scope=None, mode='replace', keep_alpha=True,
-                      fit='stretch', opacity=1.0):
+                      fit='stretch', opacity=1.0, ids=None):
         """Lay one image over the colour of every asset in the firmware.
 
         Per asset, not per region. The old version walked a region in payload
@@ -915,7 +925,7 @@ class Project(object):
         im = im.convert('RGB')
         if im.size[0] < 1 or im.size[1] < 1:
             raise ValueError("empty texture")
-        targets = self.targets(scope)
+        targets = self.targets(scope, ids)
         if not targets:
             raise ValueError("nothing to apply it to")
         done = 0
@@ -961,6 +971,90 @@ class Project(object):
             self.body[off:off + n] = a.tobytes()
             done += 1
             pixels += w * h
+        self.edits += done
+        return {'regions': done, 'targets': len(targets), 'pixels': pixels,
+                'skipped': skipped}
+
+    def recolour(self, scope=None, hue=0.0, sat=1.0, light=1.0, tint=None,
+                 strength=1.0, keep_alpha=True, ids=None):
+        """Shift the colours of whole assets at once - the theming tool.
+
+        A texture paints a picture over the artwork; this keeps the artwork and
+        moves it round the colour wheel, which is what "make the interface
+        green" actually means. `hue` in degrees, `sat` and `light` as
+        multipliers, `tint` pulls everything towards one colour by `strength`.
+
+        Works on the same targets a texture does, and refuses the same spans:
+        the twelve bytes in front of each image are the heap's own header and
+        the firmware reads them.
+        """
+        if _np is None:
+            raise ValueError("this needs numpy")
+        import colorsys
+        targets = self.targets(scope, ids)
+        if not targets:
+            raise ValueError("nothing selected")
+        tint_rgb = None
+        if tint:
+            tint_rgb = _np.array(_rgb(tint), dtype=_np.float32) / 255.0
+        done = pixels = skipped = 0
+        # one lookup table for all 65536 colours beats touching pixels one by one
+        lut = _np.arange(65536, dtype=_np.uint32)
+        r = (((lut >> 11) & 0x1F) / 31.0).astype(_np.float32)
+        g = (((lut >> 5) & 0x3F) / 63.0).astype(_np.float32)
+        b = ((lut & 0x1F) / 31.0).astype(_np.float32)
+        mx = _np.maximum(_np.maximum(r, g), b)
+        mn = _np.minimum(_np.minimum(r, g), b)
+        v = mx
+        sdiff = mx - mn
+        sv = _np.where(mx > 0, sdiff / _np.where(mx > 0, mx, 1), 0)
+        h = _np.zeros_like(r)
+        nz = sdiff > 0
+        rm = nz & (mx == r)
+        gm = nz & (mx == g) & ~rm
+        bm = nz & ~rm & ~gm
+        h[rm] = ((g - b)[rm] / sdiff[rm]) % 6
+        h[gm] = ((b - r)[gm] / sdiff[gm]) + 2
+        h[bm] = ((r - g)[bm] / sdiff[bm]) + 4
+        h = (h / 6.0 + hue / 360.0) % 1.0
+        sv = _np.clip(sv * sat, 0, 1)
+        v = _np.clip(v * light, 0, 1)
+        i = _np.floor(h * 6).astype(_np.int32) % 6
+        f = h * 6 - _np.floor(h * 6)
+        p_ = v * (1 - sv)
+        q = v * (1 - f * sv)
+        t = v * (1 - (1 - f) * sv)
+        rr = _np.select([i == 0, i == 1, i == 2, i == 3, i == 4], [v, q, p_, p_, t], t)
+        gg = _np.select([i == 0, i == 1, i == 2, i == 3, i == 4], [t, v, v, q, p_], p_)
+        bb = _np.select([i == 0, i == 1, i == 2, i == 3, i == 4], [p_, p_, t, v, v], q)
+        if tint_rgb is not None:
+            k = float(_np.clip(strength, 0, 1))
+            rr = rr * (1 - k) + tint_rgb[0] * v * k
+            gg = gg * (1 - k) + tint_rgb[1] * v * k
+            bb = bb * (1 - k) + tint_rgb[2] * v * k
+        out = ((_np.clip(rr, 0, 1) * 31).astype(_np.uint32) << 11)             | ((_np.clip(gg, 0, 1) * 63).astype(_np.uint32) << 5)             | (_np.clip(bb, 0, 1) * 31).astype(_np.uint32)
+        lut = out.astype(_np.uint16)
+        for _label, off, w, hgt in targets:
+            n = w * hgt * 3
+            sec = self.section_of(off)
+            if sec is None or off + n > sec.off + sec.len:
+                continue
+            try:
+                self._check_span(off, n)
+            except ValueError:
+                skipped += 1
+                continue
+            a = _np.frombuffer(bytes(self.body[off:off + n]),
+                               dtype=_np.uint8).reshape(-1, 3).copy()
+            c = a[:, 0].astype(_np.uint16) | (a[:, 1].astype(_np.uint16) << 8)
+            nc = lut[c]
+            a[:, 0] = (nc & 0xFF).astype(_np.uint8)
+            a[:, 1] = (nc >> 8).astype(_np.uint8)
+            if not keep_alpha:
+                a[:, 2] = 255
+            self.body[off:off + n] = a.tobytes()
+            done += 1
+            pixels += w * hgt
         self.edits += done
         return {'regions': done, 'targets': len(targets), 'pixels': pixels,
                 'skipped': skipped}
@@ -1139,6 +1233,11 @@ class Handler(BaseHTTPRequestHandler):
                 span = min(span, len(PROJECT.body) - off - 1024)
                 w = PROJECT.alpha_width(off, max(span, 24576))
                 return self._json({'off': off, 'width': w})
+            if u.path == '/api/screens':
+                f = os.path.join(HERE, 'screens.json')
+                if os.path.isfile(f):
+                    return self._send(200, open(f, 'rb').read())
+                return self._json({'screens': []})
             if u.path == '/api/fonts':
                 return self._json({'items': fonts_available(),
                                    'dir': FONT_DIR})
@@ -1318,6 +1417,25 @@ class Handler(BaseHTTPRequestHandler):
                 ImageFont.truetype(path, 16)
                 return self._json({'ok': True, 'path': path, 'name': name,
                                    'fonts': fonts_available()})
+            if u.path == '/api/screens':
+                f = os.path.join(HERE, 'screens.json')
+                open(f, 'w', encoding='utf-8').write(json.dumps(data, indent=1))
+                return self._json({'ok': True, 'path': f,
+                                   'screens': len(data.get('screens', []))})
+            if u.path == '/api/recolor':
+                scope = data.get('regions')
+                res = PROJECT.recolour(
+                    scope=set(scope) if scope else None,
+                    ids=data.get('ids'),
+                    hue=float(data.get('hue', 0)),
+                    sat=float(data.get('sat', 1)),
+                    light=float(data.get('light', 1)),
+                    tint=data.get('tint') or None,
+                    strength=float(data.get('strength', 1)),
+                    keep_alpha=bool(data.get('keep_alpha', True)))
+                res['ok'] = True
+                res['edits'] = PROJECT.edits
+                return self._json(res)
             if u.path == '/api/replace_gif':
                 raw = base64.b64decode(data['gif'].split(',')[-1])
                 r = PROJECT.put_gif(int(data.get('i', 0)), raw)
@@ -1347,6 +1465,7 @@ class Handler(BaseHTTPRequestHandler):
                 res = PROJECT.apply_texture(
                     im,
                     scope=set(scope) if scope else None,
+                    ids=data.get('ids'),
                     mode=data.get('mode', 'replace'),
                     keep_alpha=bool(data.get('keep_alpha', True)),
                     fit=data.get('fit', 'stretch'),

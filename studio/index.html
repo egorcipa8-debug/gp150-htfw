@@ -86,6 +86,7 @@ dialog::backdrop{background:#0009}
 
 <nav>
   <a class="on" data-tab="gfx" onclick="tab('gfx')">Graphics</a>
+  <a data-tab="scr" onclick="tab('scr')">Screen</a>
   <a data-tab="str" onclick="tab('str')">Text</a>
   <a data-tab="fnt" onclick="tab('fnt')">Font</a>
   <a data-tab="inf" onclick="tab('inf')">Image info</a>
@@ -183,6 +184,80 @@ dialog::backdrop{background:#0009}
       </div>
             </div>
 <div class="grid" id="tiles"></div>
+    </div>
+  </section>
+
+  <!-- ---------------- screen ---------------- -->
+  <section id="scr" hidden>
+    <div class="card">
+      <div class="row">
+        <b class="meta">Screen</b>
+        <select id="scrsel" onchange="screenLoad(this.value)" style="min-width:150px"></select>
+        <button onclick="screenNew()">New</button>
+        <button onclick="screenSave()">Save</button>
+        <label>Background <input type="color" id="scrbg" value="#12325e" oninput="screenBg()"></label>
+        <label class="meta"><input type="checkbox" id="scrgrid" checked onchange="screenBg()"> grid</label>
+        <div class="spacer"></div>
+        <span id="scrnote" class="meta"></span>
+      </div>
+      <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+        <div>
+          <div id="canvas" style="position:relative;width:640px;height:480px;
+               background:#12325e;border:1px solid var(--line);border-radius:4px;
+               overflow:hidden;image-rendering:pixelated"></div>
+          <div class="hint" style="width:640px">
+            320&times;240, the pedal's screen, at 2&times;. Drag an asset in from the
+            list; drag it about to compose. <b>The pedal's own layout is not in the
+            firmware</b> — where each widget sits is decided by the application code,
+            which lives in SDRAM and is not mapped in the file. So this canvas is
+            where <i>you</i> arrange things to work on them; what it writes back is
+            the artwork itself, in its own slot, at its own size.
+          </div>
+        </div>
+        <div style="width:330px">
+          <div class="row"><b class="meta">Selected</b><span id="selinfo" class="meta">nothing</span></div>
+          <div class="row">
+            <button onclick="selReplace()">Replace…</button>
+            <button onclick="selText()">Text…</button>
+            <button onclick="selRemove()">Take off canvas</button>
+          </div>
+          <div class="row">
+            <label>Hue <input type="range" id="rchue" min="-180" max="180" value="0" style="width:120px"
+                   oninput="$('#rchuev').textContent=this.value"><span id="rchuev" class="meta">0</span></label>
+          </div>
+          <div class="row">
+            <label>Saturation <input type="range" id="rcsat" min="0" max="200" value="100" style="width:110px"
+                   oninput="$('#rcsatv').textContent=this.value+'%'"><span id="rcsatv" class="meta">100%</span></label>
+            <label>Light <input type="range" id="rclight" min="20" max="200" value="100" style="width:110px"
+                   oninput="$('#rclightv').textContent=this.value+'%'"><span id="rclightv" class="meta">100%</span></label>
+          </div>
+          <div class="row">
+            <label>Tint <input type="color" id="rctint" value="#1e5aa8"></label>
+            <label>Strength <input type="range" id="rcstr" min="0" max="100" value="0" style="width:100px"
+                   oninput="$('#rcstrv').textContent=this.value+'%'"><span id="rcstrv" class="meta">0%</span></label>
+          </div>
+          <div class="row">
+            <button class="primary" onclick="recolour('sel')">Recolour the selected</button>
+            <button onclick="recolour('screen')">…everything on the canvas</button>
+          </div>
+          <div class="row">
+            <button onclick="recolour('all')">…every asset in the firmware</button>
+            <button onclick="revertAll()">Revert all edits</button>
+          </div>
+          <div class="hint">
+            Recolour keeps the drawing and moves its colours: hue turns the wheel,
+            tint pulls everything towards one colour. That is how a whole interface
+            changes theme without anything being redrawn.
+          </div>
+        </div>
+        <div style="flex:1;min-width:280px">
+          <div class="row"><b class="meta">Assets</b>
+            <input id="scrfilter" placeholder="size, e.g. 80x102" style="width:130px" oninput="screenAssets()">
+            <span id="scrcount" class="meta"></span>
+          </div>
+          <div id="scrlist" class="grid" style="max-height:430px;overflow:auto"></div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -333,9 +408,10 @@ async function api(p,o){
   return j}
 
 function tab(n){document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.tab===n));
-  ['gfx','str','fnt','inf','dev'].forEach(s=>$('#'+s).hidden=(s!==n));
+  ['gfx','scr','str','fnt','inf','dev'].forEach(s=>$('#'+s).hidden=(s!==n));
   if(n==='str')loadStrings(); if(n==='inf')fillInfo(); if(n==='dev')devInit();
-  if(n==='fnt'){ FONTS.length ? fontPreview() : fontInit(); }}
+  if(n==='fnt'){ FONTS.length ? fontPreview() : fontInit(); }
+  if(n==='scr')screenInit();}
 
 async function refresh(){
   ST=await api('/api/state');
@@ -862,6 +938,163 @@ async function applyTexture(){
         `${d.pixels.toLocaleString()} pixels`,'g');
     refreshEdits(); drawTiles();
   }catch(e){ log('texture failed','r') }
+}
+
+
+/* ---------------- screen: the composition editor ----------------
+   The pedal decides its own layout in code that is not in the firmware file, so
+   this canvas is not a picture of the device's screen - it is a place to put the
+   real assets side by side, at their real size, and work on them. Every edit
+   here goes into the asset's own slot. */
+let SCREENS={screens:[]}, SCR=null, SEL=null, ASSETS=[];
+
+async function screenInit(){
+  if(!ASSETS.length){
+    try{ const d=await api('/api/curated'); ASSETS=d.items.filter(x=>x.grade!=='junk'); }
+    catch(_){ return }
+  }
+  if(!SCREENS.screens.length){
+    try{ SCREENS=await api('/api/screens'); }catch(_){ SCREENS={screens:[]} }
+    if(!SCREENS.screens||!SCREENS.screens.length) SCREENS={screens:[{name:'screen 1',bg:'#12325e',items:[]}]};
+  }
+  const sel=$('#scrsel'); sel.innerHTML='';
+  SCREENS.screens.forEach((sc,i)=>{const o=document.createElement('option');o.value=i;o.textContent=sc.name;sel.appendChild(o)});
+  screenLoad(sel.value||0);
+  screenAssets();
+}
+
+function screenLoad(i){
+  SCR=SCREENS.screens[+i]||SCREENS.screens[0];
+  $('#scrsel').value=SCREENS.screens.indexOf(SCR);
+  $('#scrbg').value=SCR.bg||'#12325e';
+  SEL=null; screenBg(); screenDraw();
+}
+
+function screenNew(){
+  const name=prompt('name for the screen','screen '+(SCREENS.screens.length+1));
+  if(!name)return;
+  SCREENS.screens.push({name,bg:$('#scrbg').value,items:[]});
+  screenInit();
+}
+
+async function screenSave(){
+  if(SCR) SCR.bg=$('#scrbg').value;
+  try{ const d=await api('/api/screens',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(SCREENS)});
+    log(`✓ ${d.screens} screen(s) saved to studio/screens.json`,'g');
+  }catch(_){ log('could not save the layout','r') }
+}
+
+function screenBg(){
+  const c=$('#canvas');
+  c.style.background=$('#scrbg').value;
+  c.style.backgroundImage=$('#scrgrid').checked
+    ? 'linear-gradient(rgba(255,255,255,.06) 1px,transparent 1px),'+
+      'linear-gradient(90deg,rgba(255,255,255,.06) 1px,transparent 1px)' : 'none';
+  c.style.backgroundSize='32px 32px';
+}
+
+function screenDraw(){
+  const c=$('#canvas'); c.innerHTML='';
+  (SCR.items||[]).forEach((it,i)=>{
+    const el=document.createElement('img');
+    el.src=`/api/image?off=${it.off}&w=${it.w}&h=${it.h}&t=${Date.now()}`;
+    el.style.cssText=`position:absolute;left:${it.x*2}px;top:${it.y*2}px;`+
+      `width:${it.w*2}px;height:${it.h*2}px;cursor:move;`+
+      (SEL===i?'outline:2px solid var(--accent)':'');
+    el.draggable=false;
+    el.onmousedown=e=>{ SEL=i; screenSelect(); dragItem(e,it,el); };
+    c.appendChild(el);
+  });
+  screenSelect();
+}
+
+function dragItem(e,it,el){
+  e.preventDefault();
+  const c=$('#canvas').getBoundingClientRect();
+  const dx=e.clientX-c.left-it.x*2, dy=e.clientY-c.top-it.y*2;
+  const move=ev=>{
+    it.x=Math.max(0,Math.min(320-it.w,Math.round((ev.clientX-c.left-dx)/2)));
+    it.y=Math.max(0,Math.min(240-it.h,Math.round((ev.clientY-c.top-dy)/2)));
+    el.style.left=it.x*2+'px'; el.style.top=it.y*2+'px';
+    screenSelect();
+  };
+  const up=()=>{document.removeEventListener('mousemove',move);document.removeEventListener('mouseup',up)};
+  document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+}
+
+function screenSelect(){
+  const it=SCR&&SCR.items[SEL];
+  $('#selinfo').textContent = it
+    ? `${it.w}×${it.h} at 0x${it.off.toString(16).toUpperCase()} — placed at ${it.x},${it.y}`
+    : 'nothing';
+  [...$('#canvas').children].forEach((el,i)=>{
+    el.style.outline = i===SEL ? '2px solid var(--accent)' : '';
+  });
+}
+
+function screenAssets(){
+  const f=$('#scrfilter').value.trim().toLowerCase();
+  const g=$('#scrlist'); g.innerHTML='';
+  const list=ASSETS.filter(a=>!f||`${a.w}x${a.h}`.includes(f)||a.off.toString(16).includes(f));
+  $('#scrcount').textContent=`${list.length} of ${ASSETS.length}`;
+  list.slice(0,240).forEach(a=>{
+    const d=document.createElement('div');
+    d.className='tile'+(a.grade!=='art'?' doubt':'');
+    const z=a.w>64||a.h>64?1:2;
+    d.innerHTML=`<img src="/api/image?off=${a.off}&w=${a.w}&h=${a.h}&scale=${z}"
+                   width="${a.w*z}" height="${a.h*z}"><div class="n">${a.w}×${a.h}</div>`;
+    d.title='click to put it on the canvas';
+    d.onclick=()=>{
+      SCR.items=SCR.items||[];
+      SCR.items.push({off:a.off,w:a.w,h:a.h,id:a.id,x:(320-a.w)>>1,y:(240-a.h)>>1});
+      SEL=SCR.items.length-1; screenDraw();
+    };
+    g.appendChild(d);
+  });
+}
+
+function selRemove(){
+  if(SEL===null)return;
+  SCR.items.splice(SEL,1); SEL=null; screenDraw();
+}
+
+async function selReplace(){
+  const it=SCR&&SCR.items[SEL]; if(!it){log('select something on the canvas','r');return}
+  await replaceOne(it.off,it.w,it.h); screenDraw();
+}
+
+function selText(){
+  const it=SCR&&SCR.items[SEL]; if(!it){log('select something on the canvas','r');return}
+  $('#ftarget').value=it.off.toString(16).toUpperCase();
+  $('#ftw').value=it.w; $('#fth').value=it.h;
+  tab('fnt'); fontPreview();
+}
+
+async function recolour(what){
+  const body={hue:+$('#rchue').value, sat:+$('#rcsat').value/100,
+              light:+$('#rclight').value/100, tint:$('#rctint').value,
+              strength:+$('#rcstr').value/100, keep_alpha:true};
+  if(what==='sel'){
+    const it=SCR&&SCR.items[SEL]; if(!it){log('select something first','r');return}
+    body.ids=[it.id];
+  } else if(what==='screen'){
+    const ids=(SCR.items||[]).map(i=>i.id).filter(i=>i!==undefined);
+    if(!ids.length){log('nothing on the canvas','r');return}
+    body.ids=ids;
+  } else if(!confirm('Recolour every asset in the firmware?')) return;
+  try{
+    const d=await api('/api/recolor',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)});
+    log(`✓ recoloured ${d.regions} of ${d.targets}`+(d.skipped?`, ${d.skipped} skipped as unsafe`:''),'g');
+    await refreshEdits(); screenDraw(); drawTiles();
+  }catch(_){ log('recolour failed','r') }
+}
+
+async function revertAll(){
+  if(!confirm('Throw away every edit and go back to the loaded firmware?'))return;
+  await api('/api/revert',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  DIRTY.clear(); log('reverted','g'); await refreshEdits(); screenDraw(); drawTiles();
 }
 
 let FONTS=[], PICK_FOR_TEXT=false;

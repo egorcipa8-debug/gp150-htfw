@@ -11,3 +11,6 @@ studio/__pycache__/
 
 # fonts people add to Studio are theirs, not ours
 studio/fonts/
+
+# a composition is the user's working file, not ours
+studio/screens.json
