@@ -172,8 +172,13 @@ packets          CRC-8 table against the DLL's, a frame round-tripped, a
 NAM capture      every weight accounted for, submodels agree (ESR 0.0038)
 ```
 
-24 checks on GP-150 V1.1.1, all passing. Nothing in it writes to the firmware,
-opens a MIDI port or touches a device.
+23 checks on GP-150 V1.1.1, all passing; 17 on a V1.0.5 image that had been
+edited and never re-sealed, also all passing — a stale checksum is a fact about
+the input, so the test is that sealing repairs it and changes nothing else, and
+the round trip then reproduces the file except those two bytes. The index reads
+V1.0.5 as well: 120 images, and the same boot animation to the byte.
+
+Nothing in it writes to the firmware, opens a MIDI port or touches a device.
 
 ### `tools/htfw_tool.py`
 

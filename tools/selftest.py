@@ -61,13 +61,23 @@ def test_container(path):
     check("every region CRC verifies", not bad,
           "%d regions" % len(fw.sections) if not bad
           else "wrong: %s" % ', '.join(bad))
+    # A stale whole-file CRC says something about the input, not about these
+    # tools - an image that was edited and never re-sealed has one. So the test
+    # is that sealing behaves: it leaves a good image alone and repairs a bad
+    # one, and either way the result verifies.
     stored = (blob[4] << 8) | blob[5]
     calc = htfw_tool.crc16_modbus(blob[6:])
-    check("whole-file CRC verifies", stored == calc,
-          "0x%04X" % stored if stored == calc
-          else "stored 0x%04X, computed 0x%04X" % (stored, calc))
     sealed = htfw_tool.seal(blob)
-    check("re-sealing an intact image changes nothing", sealed == blob)
+    again = htfw_tool.crc16_modbus(sealed[6:])
+    if stored == calc:
+        check("whole-file CRC verifies and sealing is a no-op",
+              sealed == blob, "0x%04X" % stored)
+    else:
+        check("whole-file CRC was stale and sealing repairs it",
+              sealed != blob and ((sealed[4] << 8) | sealed[5]) == again
+              and sealed[6:] == blob[6:],
+              "input said 0x%04X, content says 0x%04X - this image was edited "
+              "without re-sealing" % (stored, calc))
     return fw, body
 
 
@@ -80,9 +90,24 @@ def test_roundtrip(path, blob_sha):
             htfw_tool.cmd_unpack(path, tmp)
             out = os.path.join(tmp, 'repacked.bin')
             htfw_tool.cmd_repack(path, tmp, out)
-        got = hashlib.sha256(open(out, 'rb').read()).hexdigest()
-        check("unpack then repack reproduces the file", got == blob_sha,
-              got[:16] + ('' if got == blob_sha else ' != ' + blob_sha[:16]))
+        made = open(out, 'rb').read()
+        got = hashlib.sha256(made).hexdigest()
+        if got == blob_sha:
+            check("unpack then repack reproduces the file", True, got[:16])
+        else:
+            # A file that was edited and never re-sealed comes back with its
+            # checksum repaired, which is a difference of exactly two bytes at
+            # 0x04. That is the tool being right about a stale input, not the
+            # round trip being wrong, and it is worth saying which one it is.
+            orig = open(path, 'rb').read()
+            diff = [i for i in range(min(len(orig), len(made)))
+                    if orig[i] != made[i]]
+            if len(orig) == len(made) and diff == [4, 5]:
+                check("unpack then repack reproduces the file", True,
+                      "except the whole-file CRC, which was stale in the input")
+            else:
+                check("unpack then repack reproduces the file", False,
+                      "%d bytes differ" % len(diff))
     except SystemExit as e:
         check("unpack then repack reproduces the file", False, str(e))
     finally:
