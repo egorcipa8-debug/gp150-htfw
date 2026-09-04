@@ -119,7 +119,12 @@ no network access of any kind.
   *index + everything the scan finds* adds the artwork that carries no
   descriptor, recovered the old way — per-region width estimation, which is what
   the offset/width/height controls and the strip and tiles views are still there
-  for. *Keep alpha byte* copies the alpha byte of every pixel from the original,
+  for. The byte phase of those regions is settled on the alpha plane rather than
+  on colour: only at the right phase does the third byte of every pixel read as
+  a silhouette, 0 or 255 nearly everywhere, and on the pedal sheet the three
+  phases score 0.21, 0.21 and 0.95. The colour test that used to decide it reads
+  a photograph as colourful at every phase, which is what left four regions two
+  bytes short and wearing a magenta rim. *Keep alpha byte* copies the alpha byte of every pixel from the original,
   so icon shapes survive a recolour.
 - **Text** — the string tables, recovered as *chains*: NUL-terminated printable runs
   packed one after another with only a few bytes of padding between them. That shape

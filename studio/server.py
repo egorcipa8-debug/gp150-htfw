@@ -193,8 +193,15 @@ class Project(object):
                     # phase first (which byte starts a pixel), then the column
                     # origin - doing it the other way round leaves the halves of
                     # a split run framed for the alignment they no longer have
-                    b0 += ph + 1
+                    # best_phase answers with the byte that starts a whole
+                    # pixel, so it is added as it stands
+                    b0 += ph
                     b0 = self._align(b0, b1, w)
+                    # Last word on the byte phase, measured on the region that
+                    # actually came out rather than on the block it started as:
+                    # the run can have been cut and rotated since, and being one
+                    # byte out is what puts a magenta rim on everything.
+                    b0 += self.best_phase(b0, min((b1 - b0) // 3, 20000))
                     out.append({'id': len(out), 'off': b0, 'end': b1,
                                 'bytes': b1 - b0, 'width': w,
                                 'rows': (b1 - b0) // (w * 3),
@@ -260,7 +267,8 @@ class Project(object):
     def _width_scores(self, off, win_px, lo=8, hi=400):
         """Row-difference score for every candidate width over one window of the
         alpha plane, plus the window's spread. Returns (scores, std)."""
-        al = bytes(self.body[off:off + win_px * 3:3])
+        # the alpha plane is the third byte of every pixel
+        al = bytes(self.body[off + 2:off + 2 + win_px * 3:3])
         if len(al) < 64:
             return None, 0.0
         if _np is None:
@@ -355,27 +363,55 @@ class Project(object):
         if len(buf) < npx * 3:
             return None
         a = _np.frombuffer(buf, dtype=_np.uint8).reshape(-1, 3)
-        vis = a[:, 0] > 32
+        vis = a[:, 2] > 32
         if int(vis.sum()) < 24:
             return None
-        v = (a[vis, 1].astype(_np.uint16) | (a[vis, 2].astype(_np.uint16) << 8))
+        v = (a[vis, 0].astype(_np.uint16) | (a[vis, 1].astype(_np.uint16) << 8))
         r = ((v >> 11) & 0x1F) * 255 // 31
         g = ((v >> 5) & 0x3F) * 255 // 63
         b = (v & 0x1F) * 255 // 31
         rgb = _np.stack([r, g, b]).astype(_np.float64)
         return float((rgb.max(0) - rgb.min(0)).mean())
 
-    def best_phase(self, off, npx, margin=0.6):
-        """Which byte offset starts a whole pixel here. Only moves off zero when
-        the winner is clearly cleaner - photographic artwork is colourful at
-        every phase and must not be nudged around on a tie."""
-        vals = []
+    def alphaness(self, off, npx):
+        """How much the third byte of every pixel from `off` behaves like an
+        alpha channel: fully transparent or fully opaque, almost always."""
+        if _np is None:
+            return None
+        raw = bytes(self.body[off + 2:off + 2 + npx * 3:3])
+        if len(raw) < 64:
+            return None
+        a = _np.frombuffer(raw, dtype=_np.uint8)
+        return float(((a == 0) | (a == 255)).mean())
+
+    def best_phase(self, off, npx, margin=0.05):
+        """Which byte offset starts a whole pixel here.
+
+        The alpha plane is the test: a pixel is [colour lo][colour hi][alpha],
+        and only at the right phase does that third byte read as a silhouette -
+        0 or 255 nearly everywhere. It separates cleanly where the colour-based
+        test does not: on the pedal sheet at 0x27C0DA the three phases score
+        0.21, 0.21 and 0.95.
+
+        Colour is the tiebreaker rather than the test. Read one byte out, an
+        alpha of 0xFF lands in the colour's low bits and pins blue, so a grey
+        icon comes back with a magenta rim - but a photograph is colourful at
+        every phase, which is why that measure alone once left three of these
+        regions two bytes short.
+        """
+        vals = [self.alphaness(off + d, npx) for d in (0, 1, 2)]
+        if all(v is not None for v in vals):
+            b = max(range(3), key=lambda i: vals[i])
+            others = max(vals[i] for i in range(3) if i != b)
+            if vals[b] - others >= margin:
+                return b
+        fr = []
         for d in (0, 1, 2):
             v = self.fringe(off + d, npx)
-            vals.append(1e9 if v is None else v)
-        b = min(range(3), key=lambda i: vals[i])
-        others = min(vals[i] for i in range(3) if i != b)
-        if b != 0 and vals[b] < others * margin:
+            fr.append(1e9 if v is None else v)
+        b = min(range(3), key=lambda i: fr[i])
+        others = min(fr[i] for i in range(3) if i != b)
+        if b != 0 and fr[b] < others * 0.6:
             return b
         return 0
 
@@ -400,9 +436,9 @@ class Project(object):
         x = _np.frombuffer(raw, dtype=_np.uint8)
         if len(x) < npx * 3:
             return off
-        al = x[0::3].astype(_np.float64)
-        col = (x[1::3].astype(_np.uint16)
-               | (x[2::3].astype(_np.uint16) << 8)).astype(_np.float64)
+        al = x[2::3].astype(_np.float64)
+        col = (x[0::3].astype(_np.uint16)
+               | (x[1::3].astype(_np.uint16) << 8)).astype(_np.float64)
         # The seam a frame edge makes at shift s is the average of |P[i]-P[i+w-1]|
         # over i congruent to s modulo w. Computing that difference once and
         # binning it by residue costs one pass instead of one pass per shift.
