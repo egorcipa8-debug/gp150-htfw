@@ -653,3 +653,111 @@ point at noise.
 
 `tools/gfx_index.py` implements the scan, the decode and the encode; Studio's
 Graphics tab is driven by it, and no width has to be nudged for an indexed image.
+
+---
+
+## 18. The NAM path, end to end - and the pedal really does run NAM
+
+`.nam` never reaches the pedal. Valeton Suite converts it to **`.namb`**, magic
+`BMAN`, and that is what is uploaded. The converter is in Suite's own
+`assets/5868USB.dll` and is exported as plain C, so it can be driven from a
+script (`tools/nam2namb.py`):
+
+```c
+const char *convertNamToNambAtPath(const char *in, const char *out, double slim);
+const char *convertNamToNambWithSlim(const char *in, double slim);
+const char *convertNamToNamb(const char *in);
+const char *getLastNamToNambError(void);
+```
+
+The wrappers are three instructions each - `convertNamToNamb` is
+`xorps xmm2,xmm2; xor edx,edx; jmp common`, so slim defaults to 0 and the output
+path to one derived from the input - and they all reach
+`convertNamFileToNambFile(std::string const&, std::string const&, bool, double)`.
+The library also carries the strings of a `nam2namb [--slim <factor>] input.nam
+[output.namb]` command line, so this was a standalone tool before it was a DLL.
+
+**The magic is in the firmware.** `BMAN` appears once in section `b`, at
+`0x00E818`, sitting in a literal pool between Thumb functions. The pedal parses
+NAMB itself; the RT1064 is running the capture's own WaveNet, not a proprietary
+model fitted to it. (That is the A2 generation. The A1 devices - GP-5, GP-50 -
+get a *refit* instead: `namConvertClo*` in the same library runs the NAM to
+generate reference audio and fits a much smaller model to it. Two different
+paths in one library, and only one of them applies here.)
+
+### What a capture actually is now
+
+Captures from TONE3000 are NAM 0.7.0 **SlimmableContainers**: one file holding
+the same amp trained at two widths.
+
+| submodel | channels | weights | MAC/sample | .namb | share of a 600 MHz M7 at 48 kHz |
+|---|---|---|---|---|---|
+| `max_value` 0.5 | 3 | 1871 | 1 731 | 7 980 B | ~14% |
+| `max_value` 1 | 8 | 12 146 | 11 776 | 49 080 B | ~94% |
+
+`slim` picks one of them and nothing else: the weights in the `.namb` are the
+JSON's own float32 values, byte for byte. So the wide submodel is not a setting
+anyone can afford - it would need most of the core on its own - and slim 0 is
+the only real option on this hardware.
+
+What that costs is measurable, and `nam2namb.py check` measures it by running
+both models: 0.0026 ESR on a clean amp, 0.0115 on a high-gain lead - the
+expected shape, since distortion is what compresses badly.
+
+### The weight layout, confirmed by reconstruction
+
+The forward pass in `nam2namb.py` is written from the config, and the layout is
+not assumed: per layer array a 1x1 rechannel `(channels, input_size)`, then for
+each layer the dilated conv `(out, in, tap)` and its bias, the condition mixin,
+the 1x1 and its bias; then the array's head conv `(1, channels, 16)` and bias;
+then `head_scale`, which appears both as a config field and as the last weight.
+That accounts for **1871 weights exactly** at 3 channels and **12 146 exactly**
+at 8, and the two independently trained submodels of one capture come out
+correlated at **0.9963** - neither of which happens if the layout is wrong.
+
+### The `.namb` container
+
+```
+0x00  char[4]  "BMAN"
+0x04  u32      format version, 1
+0x08  u32      total file size
+0x0C  u32      offset of the weights, always 496
+0x10  u32      number of weights
+0x14  u32      length of the config block at 0x50
+0x18  u32      checksum (not a byte sum; not needed to read one)
+0x20  u8[3]    NAM version, 0 7 0
+0x23  u8       architecture id, 1 = WaveNet
+0x24  double   sample rate
+0x2C  double   loudness, LUFS
+0x50  ...      config block, then float32 weights at 0x1F0
+```
+
+## 19. Ghidra on the Windows library
+
+The GP-50 project's notes came from the macOS `5868USB.dylib`. The Windows DLL
+is the better target: it exports **61** symbols against the dylib's handful,
+including the whole NAMB converter, and it is what a Windows install has on
+disk anyway. `tools/ghidra/DecompileExports.java` drives a headless run -
+import, analyse, decompile the named exports and everything they call to a given
+depth, one `.c` per function.
+
+Analysis of the 2.8 MB DLL takes about a minute; six exports at depth 2 come to
+137 functions.
+
+`checkCrc` decompiles to exactly what §1 and §12.1 describe, which is the first
+independent confirmation of the container's checksum rules from Valeton's own
+code rather than from measurement:
+
+```c
+if (file_length != *(u32 *)(header + 8))    return -2;   /* truncated      */
+crc = 0xFFFF; for (p = data + 6; p < end; p++) crc = table_step(crc, *p);
+if (be16(crc) != *(u16 *)(header + 4))      return -1;   /* checksum wrong */
+return 0;
+```
+
+Two byte tables at `0x180190700` and `0x180190800` - the split high/low form of
+one CRC-16 table - and the comparison assembles the result big-endian, matching
+"stored big-endian" in §1.
+
+The decompiled listings are Valeton's code however it is spelled, so they are
+not in this repository; `work/` is gitignored for them.

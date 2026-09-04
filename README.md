@@ -403,8 +403,32 @@ The `.namb` container itself:
 ```
 
 The weights are the capture's own, float32, byte-identical to the JSON they came
-from — the conversion is a repack plus a submodel choice, not a refit. (The
-*SnapTone* path in the same library is a refit, and a different thing entirely.)
+from — the conversion is a repack plus a submodel choice, not a refit. And the
+magic is in the firmware: `BMAN` appears once in section `b`, at `0x00E818`, in
+a literal pool between Thumb functions, so the pedal parses NAMB itself and the
+RT1064 is running the capture's own WaveNet. (The *SnapTone* path in the same
+library — `namConvertClo*` — is a refit onto a much smaller proprietary model,
+and that is what the A1 devices, GP-5 and GP-50, get instead.)
+
+### `tools/ghidra/DecompileExports.java`
+
+Decompile named exports of a DLL, and everything they call to a given depth, to
+C. Written for `5868USB.dll`, which is the better of the two vendor libraries to
+read: 61 exports against the macOS dylib's handful, and it carries the whole NAM
+to NAMB converter.
+
+```
+analyzeHeadless <proj-dir> <proj-name> -import 5868USB.dll     -scriptPath tools/ghidra -postScript DecompileExports.java     work/decomp 2 checkCrc deviceStartUpdate sendMidiMessage -deleteProject
+```
+
+Analysis of the 2.8 MB library takes about a minute; six exports at depth 2 come
+to 137 functions. `checkCrc` decompiles to exactly the rules this repo worked
+out by measurement — length against header `0x08`, CRC-16/MODBUS from offset 6,
+compared big-endian against header `0x04`, `-2` and `-1` for the two failures —
+which is the first confirmation of them from Valeton's own code.
+
+Keep the output out of the repository: it is Valeton's code however it is
+spelled. `work/` is gitignored for it.
 
 ### `tools/rt_analyze.py`
 
