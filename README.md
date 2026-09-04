@@ -227,6 +227,41 @@ htfw_tool.py repack  <orig> <dir> <out>    rebuild, fixing CRCs, offsets and siz
 Handles both raw and LZO-packed images. Repacking a packed image needs
 `minilzo_plugin.dll`, i.e. a Valeton Suite install on the same machine.
 
+### `tools/spy/` — watching the protocol instead of guessing it
+
+The pedal's side of the protocol is not in the firmware image: the code that
+handles it runs from SDRAM and is not in the file (FINDINGS §23), and the vendor
+library's own log records message *lengths* and nothing else. What is left is to
+watch Suite work, and the safe way to do that is to sit in the middle of it.
+
+`build_spy.py` generates and builds a DLL with the same 61 exports as
+`assets/5868USB.dll`. Ten of them are implemented and log their arguments —
+`sendMidiMessage` with the payload in full hex — and the other 51 are `.def`
+forwarders straight to the real library, which is kept beside it as
+`htusb_real.dll`. **Nothing is sent that Suite would not have sent.** This
+captures; it does not probe, and the GP-50 project's note that guessed traffic
+wedged a pedal once is the reason why.
+
+```
+build_spy.py generate      write spy.c and spy.def from the real DLL's exports
+build_spy.py build         compile it (MSVC build tools)
+build_spy.py install       rename the original aside, put ours in its place
+build_spy.py uninstall     put the original back
+build_spy.py status        what is installed, and how big the log is
+parse_spy.py <log>         the capture as a table: commands, sizes, first bytes
+parse_spy.py <log> --frames  decode payloads that are whole frames
+```
+
+Install and uninstall write into Program Files, so they need an elevated shell;
+uninstall is a rename back, and `status` will say which library is in place.
+
+Two details cost an afternoon and are worth writing down. A `.def` forwarder
+target **cannot start with a digit** — `5868USB_real.name` is read as a number
+and the export goes unresolved — which is why the original is kept under
+`htusb_real.dll`. And a forwarder resolves only against an import library the
+linker has actually pulled in: having it on `LIB` is not enough, it has to be on
+the link line.
+
 ### `tools/gp150.py`
 
 Inspect, validate and flash, driving Valeton Suite's own device library rather

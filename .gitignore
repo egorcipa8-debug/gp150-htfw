@@ -14,3 +14,12 @@ studio/fonts/
 
 # a composition is the user's working file, not ours
 studio/screens.json
+
+# the spy is built, not committed; and the vendor library is never copied here
+tools/spy/*.dll
+tools/spy/*.lib
+tools/spy/*.exp
+tools/spy/*.obj
+tools/spy/spy.c
+tools/spy/spy.def
+tools/spy/htusb_real.def
