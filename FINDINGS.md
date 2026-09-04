@@ -812,3 +812,34 @@ width of the block counter: `index` is one byte and a section runs to six figure
 of blocks, so it must wrap, and where is a guess until someone captures a real
 update. Nothing here has been sent to a device; the GP-50 project's warning that
 guessed traffic wedged a pedal once stands.
+
+---
+
+## 21. The boot animation is a GIF, and it says where it came from
+
+Section `b` carries one 448 KB run that no image descriptor covers and that
+reads as noise at every width — the only window in the whole payload with
+entropy above 7.9 outside region `g`. It is not compressed code and it is not
+audio. It is a **GIF**: `0x207AE5`, 474 509 bytes, 320x240 — the screen's own
+resolution — 57 frames at 40 ms. It is the splash: "GP-150 / HD MODELING TECH
+II" resolving into "VALETON" over a drifting grid.
+
+Its comment extension was left in:
+
+```
+GIF compressed with https://ezgif.com/optimize
+```
+
+so the animation went through a web optimiser on its way into the firmware.
+
+Nothing indexes it — no descriptor, no table, no length field anywhere in the
+format — so `tools/gif_tool.py` finds it by its own magic and walks the block
+structure (extension, image descriptor, sub-block chains) to the trailer. That
+matters here: the bytes immediately after it are more artwork, so guessing the
+end would overwrite a picture.
+
+It is replaceable. The slot cannot grow, but a GIF reader stops at the trailer,
+so a smaller animation padded with zeros is valid — `gif_tool.py inject`, or
+Studio's Graphics tab, which shows it animated at the top of the index and takes
+a new one on a click. This also explains the largest of the four areas the region
+scanner reported as graphics and could never make sense of.

@@ -414,6 +414,7 @@ async function drawCurated(){
     return;
   }
   const all=$('#doubtful').checked;
+  drawGifs(g);
   const items=d.items.filter(ic=>all||ic.grade==='art'||ic.grade===undefined);
   items.forEach(ic=>{
     const el=document.createElement('div');
@@ -441,6 +442,33 @@ async function drawCurated(){
    one page. No region to choose, no width to nudge - click a picture, replace
    it. The per-region controls are still there for the cases the scan gets
    wrong, but nothing routine should need them. */
+/* The boot animation. It is a plain GIF in section b that no descriptor covers,
+   so it is found by its own magic; the browser animates it for free. Click to
+   replace it with another GIF - the slot cannot grow, so a bigger one is
+   refused with the two numbers that matter. */
+function drawGifs(g){
+  ((ST&&ST.gifs)||[]).forEach(gf=>{
+    const el=document.createElement('div');
+    el.className='tile'+(DIRTY.has(gf.off)?' dirty':'');
+    el.innerHTML=`<img src="/api/gif?i=${gf.id}&t=${Date.now()}" width="${gf.w}" height="${gf.h}">
+                  <div class="n">animation · ${gf.w}&times;${gf.h} · ${gf.frames||'?'} frames
+                  <br>${(gf.len/1024).toFixed(0)} KB slot</div>`;
+    el.title=`0x${gf.off.toString(16).toUpperCase()} — click to replace with a GIF`;
+    el.onclick=()=>replaceGif(gf.id);
+    g.appendChild(el);
+  });
+}
+
+async function replaceGif(i){
+  const gif=await chooseFile(); if(!gif)return;
+  let r; try{ r=await api('/api/replace_gif',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({i,gif})}); }
+  catch(_){ return }
+  DIRTY.add(r.off);
+  log(`✓ animation replaced — ${r.used} of ${r.room} bytes used`,'g');
+  await refreshEdits(); drawTiles();
+}
+
 async function drawGallery(){
   const g=$('#tiles'), z=+$('#zoom').value;
   g.innerHTML='<div class="hint">scanning the whole image…</div>';
@@ -450,6 +478,7 @@ async function drawGallery(){
   g.innerHTML='';
   if(!d.items.length){ g.innerHTML='<div class="hint">nothing found</div>'; return }
   const all=$('#doubtful').checked;
+  drawGifs(g);
   const items=d.items.filter(ic=>all||ic.grade==='art'||ic.grade===undefined);
   items.forEach(ic=>{
     const el=document.createElement('div');

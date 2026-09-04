@@ -36,6 +36,7 @@ sys.path.insert(0, HERE)
 from PIL import Image                      # noqa: E402
 import htfw_tool                            # noqa: E402
 import gfx_index                            # noqa: E402
+import gif_tool                             # noqa: E402
 import gp150                                # noqa: E402
 
 PORT = 8765
@@ -88,6 +89,7 @@ class Project(object):
         self.orig = None          # pristine copy, for preserve-alpha and revert
         self.regions = []
         self.images = []
+        self.gifs = []
         self.strings = []
         self.edits = 0
 
@@ -102,6 +104,7 @@ class Project(object):
         self.orig = bytes(fw.body)
         self.body = bytearray(fw.body)
         self.edits = 0
+        self.scan_gifs()
         self.scan_images()
         self.scan_regions()
         self.scan_strings()
@@ -120,6 +123,7 @@ class Project(object):
                           'len': s.len, 'crc': s.crc} for s in f.sections],
             'regions': self.regions,
             'images': len(self.images),
+            'gifs': self.gifs,
             'strings': len(self.strings),
             'edits': self.edits,
         }
@@ -628,6 +632,33 @@ class Project(object):
             out.append(d)
         self.images = out
 
+    def scan_gifs(self):
+        """The boot animation is an ordinary GIF sitting in section b, indexed
+        by nothing - found by its own magic and walked to its trailer."""
+        try:
+            self.gifs = gif_tool.find(self.orig)
+        except Exception:                             # noqa: BLE001
+            self.gifs = []
+        for i, g in enumerate(self.gifs):
+            g['id'] = i
+
+    def put_gif(self, which, data):
+        """Same slot, same length. A GIF reader stops at the trailer, so a
+        smaller replacement is padded with zeros it will never look at."""
+        if which >= len(self.gifs):
+            raise ValueError("no GIF %d in this image" % which)
+        g = self.gifs[which]
+        if data[:6] not in gif_tool.MAGIC:
+            raise ValueError("that file is not a GIF")
+        if len(data) > g['len']:
+            raise ValueError("replacement is %d bytes and the slot holds %d - "
+                             "fewer frames or fewer colours"
+                             % (len(data), g['len']))
+        pad = bytes(g['len'] - len(data))
+        self.body[g['off']:g['off'] + g['len']] = data + pad
+        self.edits += 1
+        return {'off': g['off'], 'used': len(data), 'room': g['len']}
+
     def curated(self):
         """The indexed images, artwork first. The descriptors are the
         allocator's, so blocks it never filled are in the file with perfectly
@@ -842,6 +873,14 @@ class Handler(BaseHTTPRequestHandler):
                                                        d['size'], d['addr'],
                                                        d['fmt'])
                                         for d in PROJECT.images])})
+            if u.path == '/api/gif':
+                i = int(q.get('i', ['0'])[0])
+                if i >= len(PROJECT.gifs):
+                    return self._send(404, b'', 'image/gif')
+                g = PROJECT.gifs[i]
+                blob = bytes(PROJECT.body[g['off']:g['off'] + g['len']])
+                end = blob.rfind(b';') + 1
+                return self._send(200, blob[:end] or blob, 'image/gif')
             if u.path == '/api/curated':
                 items = PROJECT.curated()
                 return self._json({'items': items, 'ok': bool(items)})
@@ -1008,6 +1047,12 @@ class Handler(BaseHTTPRequestHandler):
                 PROJECT.put_image(int(data['off']), int(data['w']), int(data['h']),
                                   im, bool(data.get('preserve_alpha', True)))
                 return self._json({'ok': True, 'edits': PROJECT.edits})
+            if u.path == '/api/replace_gif':
+                raw = base64.b64decode(data['gif'].split(',')[-1])
+                r = PROJECT.put_gif(int(data.get('i', 0)), raw)
+                r['ok'] = True
+                r['edits'] = PROJECT.edits
+                return self._json(r)
             if u.path == '/api/replace_many':
                 im = self._image_from(data)
                 off = int(data['off']); w = int(data['w']); h = int(data['h'])

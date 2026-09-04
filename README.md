@@ -353,6 +353,30 @@ both ways). On V1.1.1 that is 94 artwork, 3 doubtful, 35 never filled, with two
 stragglers in the artwork bucket — good enough for the default view to be clean
 and for nothing to be thrown away.
 
+### `tools/gif_tool.py`
+
+The boot animation, which is an ordinary GIF. Section `b` carries a 448 KB run
+that no descriptor covers and that reads as noise at every width — the only
+high-entropy window in the payload outside the Bluetooth SoC's firmware. It is
+`0x207AE5`, 474 509 bytes, **320x240 — the screen's own resolution — 57 frames
+at 40 ms**: the "GP-150 / HD MODELING TECH II" splash resolving into VALETON.
+Whoever built it left the comment extension in place, so the file says
+`GIF compressed with https://ezgif.com/optimize`.
+
+Nothing indexes it, and the format has no length field, so it is found by its own
+magic and walked block by block to its trailer — which matters, because the bytes
+straight after it are more artwork.
+
+```
+gif_tool.py list    <fw.bin>
+gif_tool.py extract <fw.bin> <out.gif> [n]
+gif_tool.py inject  <fw.bin> <in.gif> <out.bin> [n]
+```
+
+The slot cannot grow, but a GIF reader stops at its trailer, so a smaller
+animation padded with zeros is a valid replacement. Studio shows it animated at
+the top of the Graphics tab and takes a new one on a click.
+
 ### `tools/gfx_tool.py`
 
 Extract and inject at an explicit offset, for artwork that carries no descriptor.
