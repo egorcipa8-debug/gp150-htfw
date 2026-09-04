@@ -16,6 +16,9 @@ Nothing is sent that Suite would not have sent. This captures; it does not probe
     build_spy.py uninstall           put the original back
     build_spy.py status              what is installed right now
 
+Add `--dir <folder>` to work on another copy of Suite - copy the install to
+somewhere writable and no elevation is needed at all.
+
 The install renames the vendor library to `5868USB_real.dll` and drops ours in
 its place, so `uninstall` is a rename back. Writing into Program Files needs an
 elevated shell.
@@ -32,6 +35,19 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE = os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'),
                      'Valeton Suite', 'Valeton Suite')
+
+
+def use(dirname):
+    """Point the install commands at another copy of Suite - a portable one on
+    the desktop needs no elevation and can be refreshed while the installed
+    Suite is running."""
+    global SUITE, ASSETS, REAL, KEPT
+    SUITE = os.path.abspath(dirname)
+    ASSETS = os.path.join(SUITE, 'assets')
+    REAL = os.path.join(ASSETS, '5868USB.dll')
+    KEPT = os.path.join(ASSETS, 'htusb_real.dll')
+
+
 ASSETS = os.path.join(SUITE, 'assets')
 REAL = os.path.join(ASSETS, '5868USB.dll')
 # The forwarder target cannot start with a digit - the linker reads
@@ -40,20 +56,31 @@ REAL = os.path.join(ASSETS, '5868USB.dll')
 KEPT = os.path.join(ASSETS, 'htusb_real.dll')
 
 # The calls worth writing down. Everything else is forwarded untouched.
+#
+# Every thunk takes six pointer-sized arguments and passes all six on,
+# whatever the real function's arity is. That direction is safe - spare
+# arguments in registers are ignored - while the other way round is not:
+# declaring scanInDevice(void) when it really takes (filter, callback) left
+# the real function reading whatever happened to be in rcx and rdx, which
+# crashed it, and with it Suite's ability to find the pedal at all.
+#
+# 'payload' formats (device, command, data, length, flag); 'first' says so
+# once and then keeps quiet, for the ones Suite polls.
 HOOKS = {
-    'sendMidiMessage':   ('int',  ['void*', 'unsigned char', 'const unsigned char*',
-                                   'int', 'unsigned char'], 'payload'),
-    'connectDevice':     ('int',  ['void*', 'int', 'int'], 'plain'),
-    'disConnectDevice':  ('int',  ['void*'], 'plain'),
-    'deviceStartUpdate': ('int',  ['void*', 'void*'], 'plain'),
-    'deviceStartBoot':   ('int',  ['void*'], 'plain'),
-    'setDeviceCompress': ('int',  ['void*', 'int'], 'plain'),
-    'isRealFirmware':    ('int',  ['void*'], 'plain'),
-    'checkCrc':          ('void*', ['void*'], 'plain'),
-    'scanInDevice':      ('void*', [], 'quiet'),
-    'scanOutDevice':     ('void*', [], 'quiet'),
-    'checkDeviceConnecting': ('int', ['void*'], 'quiet'),
-    'getVersionStringForFilePath': ('void*', ['const char*'], 'plain'),
+    'sendMidiMessage': 'payload',
+    'connectDevice': 'args',
+    'disConnectDevice': 'args',
+    'deviceStartUpdate': 'args',
+    'deviceStartBoot': 'args',
+    'setDeviceCompress': 'args',
+    'isRealFirmware': 'args',
+    'checkCrc': 'args',
+    'checkDeviceConnecting': 'first',
+    'scanInDevice': 'first',
+    'scanOutDevice': 'first',
+    'getVersionStringForFilePath': 'args',
+    'registerSendPort': 'args',
+    'deviceProcessCallback': 'first',
 }
 
 
@@ -163,38 +190,42 @@ def cmd_generate():
            '    return TRUE;',
            '}', '']
 
+    src.append('typedef void *(*t_any)(void *, void *, void *, void *,')
+    src.append('                          void *, void *);')
+    src.append('')
     for name in hooked:
-        ret, args, kind = HOOKS[name]
-        params = ', '.join('%s a%d' % (t, i) for i, t in enumerate(args)) or 'void'
-        argl = ', '.join('a%d' % i for i in range(len(args)))
-        src.append('typedef %s (*t_%s)(%s);' % (ret, name, ', '.join(args) or 'void'))
-        src.append('__declspec(dllexport) %s %s(%s) {' % (ret, name, params))
-        src.append('    static t_%s fn; if (!fn) fn = (t_%s)sym("%s");' % (name, name, name))
-        if kind == 'quiet':
+        kind = HOOKS[name]
+        src.append('__declspec(dllexport) void *%s(void *a0, void *a1, void *a2,' % name)
+        src.append('        void *a3, void *a4, void *a5) {')
+        src.append('    static t_any fn; if (!fn) fn = (t_any)sym("%s");' % name)
+        if kind == 'payload':
+            src.append('    {')
+            src.append('        const unsigned char *d = (const unsigned char *)a2;')
+            src.append('        int len = (int)(size_t)a3;')
+            src.append('        if (d && len > 0) {')
+            src.append('            char hex[3 * 256 + 8]; int i, n = len > 256 ? 256 : len;')
+            src.append('            for (i = 0; i < n; i++) sprintf_s(hex + 3 * i, 4, "%02X ", d[i]);')
+            src.append('            hex[3 * n] = 0;')
+            src.append('            spy_line("send cmd=0x%02X len=%d flag=%d  %s%s",')
+            src.append('                     (unsigned)(size_t)a1 & 0xFF, len,')
+            src.append('                     (unsigned)(size_t)a4 & 0xFF, hex, len > 256 ? "..." : "");')
+            src.append('        } else {')
+            src.append('            spy_line("send cmd=0x%02X len=%d flag=%d  (no payload)",')
+            src.append('                     (unsigned)(size_t)a1 & 0xFF, len,')
+            src.append('                     (unsigned)(size_t)a4 & 0xFF);')
+            src.append('        }')
+            src.append('    }')
+        elif kind == 'first':
             src.append('    { static long once; if (!InterlockedExchange(&once, 1))')
             src.append('        spy_line("%s: first call"); }' % name)
-        if kind == 'payload':
-            src.append('    if (a2 && a3 > 0) {')
-            src.append('        char hex[3 * 256 + 8]; int i, n = a3 > 256 ? 256 : a3;')
-            src.append('        for (i = 0; i < n; i++) sprintf_s(hex + 3 * i, 4, "%02X ", a2[i]);')
-            src.append('        hex[3 * n] = 0;')
-            src.append('        spy_line("send cmd=0x%02X len=%d flag=%d  %s%s",')
-            src.append('                 a1, a3, a4, hex, a3 > 256 ? "..." : "");')
-            src.append('    } else {')
-            src.append('        spy_line("send cmd=0x%02X len=%d flag=%d  (no payload)", a1, a3, a4);')
-            src.append('    }')
-        elif kind == 'plain':
-            src.append('    spy_line("%s(%s)"%s);' % (
-                name, ', '.join('%p' if t.endswith('*') else '%d' for t in args),
-                (', ' + argl) if args else ''))
-        if ret == 'void':
-            src.append('    if (fn) fn(%s);' % argl)
         else:
-            src.append('    %s r = fn ? fn(%s) : (%s)0;' % (ret, argl, ret))
-            if kind != 'quiet':
-                src.append('    spy_line("  %s -> %s", "%s", %s);'
-                           % ('%s', '%lld', name, '(long long)(size_t)r'))
-            src.append('    return r;')
+            src.append('    spy_line("%s(%%p, %%p, %%p, %%p)", a0, a1, a2, a3);' % name)
+        src.append('    {')
+        src.append('        void *r = fn ? fn(a0, a1, a2, a3, a4, a5) : 0;')
+        if kind == 'args':
+            src.append('        spy_line("  %s -> %%lld", (long long)(size_t)r);' % name)
+        src.append('        return r;')
+        src.append('    }')
         src.append('}')
         src.append('')
     with open(os.path.join(HERE, 'spy.c'), 'w', encoding='utf-8') as f:
@@ -305,6 +336,11 @@ def cmd_uninstall():
 def main(argv):
     cmds = {'generate': cmd_generate, 'build': cmd_build, 'install': cmd_install,
             'uninstall': cmd_uninstall, 'status': cmd_status}
+    argv = list(argv)
+    if '--dir' in argv:
+        i = argv.index('--dir')
+        use(argv[i + 1])
+        del argv[i:i + 2]
     if not argv or argv[0] not in cmds:
         print(__doc__.strip())
         return 1
