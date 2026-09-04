@@ -874,3 +874,80 @@ stock image of the same build, and `repair` copies the twelve bytes back without
 touching a pixel - the artwork edits, whatever they were, survive. The build in
 the photographs was repaired that way: 90 descriptors restored, vendor
 `checkCrc()` accepted, the blue theme intact.
+
+---
+
+## 23. Where the interface is drawn from - and where it is not
+
+The photographs of the pedal settled what the interface is made of. Its icons are
+the indexed images (they came back recoloured after a Studio edit), its labels
+are the strings in region `b`, and its panels, bars, highlights and the blue
+behind everything are rectangles the code fills. So the question for an editor
+is where that code lives, and this section is the answer, including the part
+that is still missing.
+
+### Region `d` is the DSP, and it runs from flash
+
+Measured, not assumed. Count the 4-aligned words in a region that point back
+inside that region, for each candidate load address:
+
+| base | words pointing inside region `d` |
+|---|---|
+| **0x60800000** — its own flash address through FlexSPI | **798** |
+| 0x00800000 | 364 |
+| 0x00838000 | 250 |
+| 0x80000000 | 239 |
+| 0x70800000 | 41 |
+
+So the application is **executed in place from flash**, not copied to SDRAM, and
+`tools/flat_image.py` can hand a disassembler the whole firmware at the addresses
+the chip sees. Region `b`'s bootstrap does the same at 0x60038000 (1066 words).
+
+Decompiled, region `d` turns out to be the **audio** application: VFP throughout,
+float tables in SDRAM, `*(float *)(0x81600000 + (int)(x * k) * 4)` - a waveshaper
+lookup, not a framebuffer. Its 1.2 MB is the effects engine.
+
+### The interface code is at 0x80000000, and it is not in the file
+
+Region `b`'s bootstrap holds 73 veneers, and they decompile to exactly what they
+look like:
+
+```c
+void FUN_6003ab36(void) { (*(code *)&LAB_8002dd74)(); return; }
+```
+
+so there is code at `0x80000000..0x8002F760` - 192 KB - that the flash-resident
+bootstrap calls into. It is not in the firmware image. Three independent tests
+say so:
+
+- a Thumb-prologue sweep over **every** possible base in the payload: best 8 of
+  73 veneer targets against 4.4 expected by chance;
+- the 31 heap deltas recovered from the image descriptors, tried one at a time:
+  best 2 of 73;
+- no scatter-load table - no place where a flash address sits beside an SDRAM
+  destination in that range.
+
+And nothing in the whole 11 MB image contains the address of any UI string:
+"Global Settings", "TAP Settings", "Input Level" are all there as text, and
+**zero** words point at them.
+
+What does point at them is an array of ~350 **SDRAM** pointers at payload
+`0x290BC1`, next to the strings themselves - `0x8025A538`, `0x8025A714`, one per
+label. That array is part of the heap image, so the string resources and their
+table are both in the file and both editable; the code that walks them is not.
+
+The likeliest explanation is the flash below `0x38000`, which no firmware image
+covers: the update protocol writes regions `b`..`h` at their own addresses and
+never touches the bootloader area (§6). A GUI framework living there would be
+present on the device, absent from every update, and reachable only by reading
+the flash off the chip.
+
+### What that means for editing
+
+Everything the interface is *made of* is editable: the 132 images, the boot
+animation, the strings, and the string pointer table. What is not is the
+geometry and the colours of the parts that are drawn rather than blitted -
+panel fills, the blue background, the selection highlight - because the code
+that holds those constants is not in the file. `tools/thumb_patch.py` can
+rewrite a MOVW immediate anywhere it *is* in the file, which covers region `d`
+and the bootstrap, and is the tool for the day the rest turns up.
