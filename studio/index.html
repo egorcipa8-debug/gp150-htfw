@@ -144,18 +144,26 @@ dialog::backdrop{background:#0009}
           <option value="multiply">multiply (tint)</option>
         </select></label>
         <label>Fit <select id="texfit">
+          <option value="stretch">stretch to each image</option>
+          <option value="cover">cover (keep aspect)</option>
           <option value="tile">tile</option>
-          <option value="stretch">stretch per region</option>
         </select></label>
+        <label>Opacity <input type="range" id="texop" min="0" max="100" value="100"
+               style="width:110px" oninput="$('#texopv').textContent=this.value+'%'">
+          <span id="texopv" class="meta">100%</span></label>
         <label class="meta"><input type="checkbox" id="texalpha" checked> keep alpha</label>
         <label class="meta"><input type="checkbox" id="texall" checked> every region</label>
         <button class="primary" onclick="applyTexture()">Apply texture</button>
       </div>
       <div class="hint">
-        The overlay works per pixel, so it reaches <b>every</b> asset in the image.
-        <b>Replace every tile</b> cannot: it walks a region in fixed width&times;height
-        steps, and regions hold images of several sizes packed with no separator, so
-        anything not sitting on that grid is skipped. <b>Keep alpha</b> leaves every
+        The overlay is applied <b>per image</b>: every entry in the firmware's own
+        index gets the whole texture fitted to its own frame, so a sheet of icons
+        comes out looking like a set rather than like a strip cut at random. Artwork
+        the index does not cover is taken a region at a time, since inside a region
+        nothing says where one picture ends.
+        <b>Multiply</b> keeps the artwork's shading and reads as a tint,
+        <b>opacity</b> mixes the result back into the colour that was there — 30%
+        recolours without erasing the drawing — and <b>keep alpha</b> leaves every
         silhouette intact and changes only the colour beneath it.
       </div>
       <div class="hint">
@@ -236,15 +244,48 @@ dialog::backdrop{background:#0009}
   <section id="fnt" hidden>
     <div class="card">
       <div class="row">
-        <label>Offset <input id="foff" style="width:120px" value="0x2A9000"></label>
-        <label>Glyph w <input type="number" id="fw" value="8"></label>
-        <label>Glyph h <input type="number" id="fh" value="16"></label>
-        <label>Count <input type="number" id="fn" value="128" style="width:90px"></label>
-        <button onclick="drawFont()">Show</button>
+        <b class="meta">Your font</b>
+        <select id="fontsel" style="min-width:220px" onchange="fontPreview()"></select>
+        <input type="file" id="fontfile" accept=".ttf,.otf" style="width:190px">
+        <button onclick="uploadFont()">Add font</button>
+        <span id="fontnote" class="meta"></span>
       </div>
-      <div class="hint">The font lives in its own region. Replacing glyphs is possible but
-        breaking it leaves the device with unreadable menus, so preview before you build.</div>
-      <div class="grid" id="fgrid"></div>
+      <div class="row">
+        <label>Text <input id="ftext" style="width:200px" value="GP-150" oninput="fontPreview()"></label>
+        <label>Size <input type="number" id="fsize" value="0" min="0" max="200" style="width:70px" oninput="fontPreview()"></label>
+        <label>Colour <input type="color" id="fcolor" value="#ffffff" oninput="fontPreview()"></label>
+        <label>Outline <input type="number" id="foutline" value="0" min="0" max="8" style="width:60px" oninput="fontPreview()">
+          <input type="color" id="focolor" value="#000000" oninput="fontPreview()"></label>
+        <label>Align <select id="falign" onchange="fontPreview()">
+          <option value="center">centre</option><option value="left">left</option><option value="right">right</option>
+        </select></label>
+        <label>Nudge y <input type="number" id="fdy" value="0" style="width:60px" oninput="fontPreview()"></label>
+      </div>
+      <div class="row">
+        <label>Slot <input id="ftarget" style="width:110px" placeholder="0x1164BC" oninput="fontPreview()"></label>
+        <label>W <input type="number" id="ftw" value="80" style="width:70px" oninput="fontPreview()"></label>
+        <label>H <input type="number" id="fth" value="102" style="width:70px" oninput="fontPreview()"></label>
+        <button onclick="pickSlotForText()">Pick from the index...</button>
+        <label class="meta"><input type="checkbox" id="fover" checked onchange="fontPreview()"> draw over the picture</label>
+        <label class="meta"><input type="checkbox" id="fkeep"> keep alpha byte</label>
+        <div class="spacer"></div>
+        <button class="primary" onclick="applyText()">Write it in</button>
+      </div>
+      <div class="hint">
+        <b>Size 0</b> means as large as fits the slot. With <b>draw over</b> off the slot
+        is cleared to transparent first, so only the lettering remains &mdash; that is how
+        you put a word where a picture was. Fonts you add are copied into
+        <code>studio/fonts</code>; the installed ones are opened where they lie.
+      </div>
+      <div id="fprev" class="grid"></div>
+      <div class="hint">
+        The pedal's <b>own</b> UI font is not in this file &mdash; not as 1-bit glyphs, not
+        as an anti-aliased sheet, not behind a glyph-descriptor table. Every 32 KB of the
+        payload was rendered as a bitmap and looked at, and the structural searches came
+        back empty; what is in there is artwork, audio, code and tables. So the menus
+        cannot be re-typefaced yet. What this tab does instead is put <i>your</i> lettering
+        into the artwork, which is what the logo and label tiles are.
+      </div>
     </div>
   </section>
 
@@ -293,7 +334,8 @@ async function api(p,o){
 
 function tab(n){document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.tab===n));
   ['gfx','str','fnt','inf','dev'].forEach(s=>$('#'+s).hidden=(s!==n));
-  if(n==='str')loadStrings(); if(n==='inf')fillInfo(); if(n==='dev')devInit();}
+  if(n==='str')loadStrings(); if(n==='inf')fillInfo(); if(n==='dev')devInit();
+  if(n==='fnt'){ FONTS.length ? fontPreview() : fontInit(); }}
 
 async function refresh(){
   ST=await api('/api/state');
@@ -425,6 +467,10 @@ async function drawCurated(){
     el.onclick=e=>{
       $('#off').value=ic.off.toString(16).toUpperCase();
       $('#w').value=ic.w; $('#h').value=ic.h;
+      if(PICK_FOR_TEXT){ PICK_FOR_TEXT=false;
+        $('#ftarget').value=ic.off.toString(16).toUpperCase();
+        $('#ftw').value=ic.w; $('#fth').value=ic.h;
+        tab('fnt'); fontPreview(); return; }
       if(e.shiftKey) pickFromAssets(ic.off,ic.w,ic.h); else replaceOne(ic.off,ic.w,ic.h);
     };
     el.title=`${ic.name}  0x${ic.off.toString(16).toUpperCase()}
@@ -489,6 +535,10 @@ async function drawGallery(){
     el.onclick=e=>{
       $('#off').value=ic.off.toString(16).toUpperCase();
       $('#w').value=ic.w; $('#h').value=ic.h;
+      if(PICK_FOR_TEXT){ PICK_FOR_TEXT=false;
+        $('#ftarget').value=ic.off.toString(16).toUpperCase();
+        $('#ftw').value=ic.w; $('#fth').value=ic.h;
+        tab('fnt'); fontPreview(); return; }
       if(e.shiftKey) pickFromAssets(ic.off,ic.w,ic.h); else replaceOne(ic.off,ic.w,ic.h);
     };
     el.title=`0x${ic.off.toString(16).toUpperCase()}  ${ic.w}×${ic.h}
@@ -798,18 +848,93 @@ async function applyTexture(){
   const every=$('#texall').checked;
   const scope = every ? null : (REG ? [REG.id] : null);
   if(!every && !scope){log('no region selected','r');return}
-  const what = every ? 'every region' : ('region '+REG.id);
-  if(!confirm(`Lay "${f.name}" over ${what}?`))return;
-  log('applying texture to '+what+' …');
+  const op=+$('#texop').value;
+  const what = every ? 'every image' : ('region '+REG.id);
+  if(!confirm(`Lay "${f.name}" over ${what} at ${op}%?`))return;
+  log(`applying texture to ${what} at ${op}% …`);
   const img=await readFileAsDataURL(f);
   try{
     const d=await api('/api/texture',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({image:img, regions:scope,
         mode:$('#texmode').value, fit:$('#texfit').value,
-        keep_alpha:$('#texalpha').checked})});
-    log(`texture applied to ${d.regions} region(s), ${d.pixels.toLocaleString()} pixels`,'g');
+        opacity:op/100, keep_alpha:$('#texalpha').checked})});
+    log(`texture applied to ${d.regions} of ${d.targets} images, `+
+        `${d.pixels.toLocaleString()} pixels`,'g');
     refreshEdits(); drawTiles();
   }catch(e){ log('texture failed','r') }
+}
+
+let FONTS=[], PICK_FOR_TEXT=false;
+
+async function fontInit(){
+  try{ const d=await api('/api/fonts'); FONTS=d.items; }catch(_){ return }
+  const sel=$('#fontsel'); sel.innerHTML='';
+  const groups={yours:[],system:[]};
+  FONTS.forEach(f=>groups[f.where].push(f));
+  ['yours','system'].forEach(g=>{
+    if(!groups[g].length)return;
+    const og=document.createElement('optgroup');
+    og.label = g==='yours' ? 'yours' : 'installed on this machine';
+    groups[g].forEach(f=>{const o=document.createElement('option');
+      o.value=f.path;o.textContent=f.name;og.appendChild(o)});
+    sel.appendChild(og);
+  });
+  $('#fontnote').textContent=`${groups.yours.length} yours, ${groups.system.length} installed`;
+  fontPreview();
+}
+
+async function uploadFont(){
+  const f=$('#fontfile').files[0];
+  if(!f){log('pick a .ttf or .otf first','r');return}
+  const data=await readFileAsDataURL(f);
+  try{
+    const d=await api('/api/font_upload',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:f.name,data})});
+    log(`✓ ${d.name} added`,'g');
+    await fontInit();
+    $('#fontsel').value=d.path;
+    fontPreview();
+  }catch(_){ log('that file did not open as a font','r') }
+}
+
+function textParams(){
+  const off=parseInt($('#ftarget').value,16);
+  return {off:Number.isFinite(off)?off:0, w:+$('#ftw').value, h:+$('#fth').value,
+          text:$('#ftext').value, font:$('#fontsel').value, size:+$('#fsize').value,
+          color:$('#fcolor').value, align:$('#falign').value, over:$('#fover').checked,
+          outline:+$('#foutline').value, ocolor:$('#focolor').value, dy:+$('#fdy').value};
+}
+
+function fontPreview(){
+  const p=textParams(), g=$('#fprev');
+  if(!p.off||p.w<4||p.h<4){
+    g.innerHTML='<div class="hint">choose a slot: the offset, width and height of the image you want to write into</div>';
+    return;
+  }
+  const scale=Math.max(1,Math.min(4,Math.floor(240/Math.max(p.w,p.h))));
+  const q=new URLSearchParams({off:'0x'+p.off.toString(16),w:p.w,h:p.h,text:p.text,
+    font:p.font,size:p.size,color:p.color,align:p.align,over:p.over?'1':'0',
+    outline:p.outline,ocolor:p.ocolor,dy:p.dy,scale:scale,t:Date.now()});
+  g.innerHTML=`<div class="tile"><img src="/api/textpreview?${q}"><div class="n">preview</div></div>`;
+}
+
+function pickSlotForText(){
+  PICK_FOR_TEXT=true;
+  tab('gfx');
+  log('click a picture in Graphics and its offset and size come back here','');
+}
+
+async function applyText(){
+  const p=textParams();
+  if(!p.off){log('no slot chosen','r');return}
+  try{
+    await api('/api/text',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(Object.assign({},p,{keep_alpha:$('#fkeep').checked}))});
+    DIRTY.add(p.off);
+    log(`✓ "${p.text}" written into 0x${p.off.toString(16).toUpperCase()}`,'g');
+    await refreshEdits(); fontPreview();
+  }catch(_){ log('could not write that','r') }
 }
 
 function drawFont(){

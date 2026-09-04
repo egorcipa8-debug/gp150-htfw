@@ -54,6 +54,36 @@ SUITE_ASSETS = [
 ]
 
 
+FONT_DIR = os.path.join(HERE, 'fonts')
+
+
+def fonts_available():
+    """Fonts to draw with: whatever has been uploaded into studio/fonts, then
+    what Windows already has. Nothing is copied out of the system directory -
+    the file is opened where it lies."""
+    out = []
+    for d, tag in ((FONT_DIR, 'yours'),
+                   (os.path.join(os.environ.get('WINDIR', r'C:\Windows'),
+                                 'Fonts'), 'system')):
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if f.lower().endswith(('.ttf', '.otf')):
+                out.append({'name': os.path.splitext(f)[0], 'file': f,
+                            'path': os.path.join(d, f), 'where': tag})
+    return out
+
+
+def _rgb(v):
+    v = (v or '').lstrip('#')
+    if len(v) == 3:
+        v = ''.join(c * 2 for c in v)
+    try:
+        return (int(v[0:2], 16), int(v[2:4], 16), int(v[4:6], 16))
+    except Exception:                                 # noqa: BLE001
+        return (255, 255, 255)
+
+
 def assets_root():
     for p in SUITE_ASSETS:
         if os.path.isdir(p):
@@ -593,6 +623,61 @@ class Project(object):
         self.body[off:off + n] = encode_image(im, w, h, original, preserve_alpha)
         self.edits += 1
 
+    def draw_text(self, off, w, h, text, font_path=None, size=0, color=(255, 255, 255),
+                  align='center', over=True, keep_alpha=False, outline=0,
+                  outline_color=(0, 0, 0), preview=False, dy=0):
+        """Draw text into one image slot with a font of your choosing.
+
+        The pedal's own UI font is not in this file - see the Font tab - so this
+        does the thing that is actually possible: it renders with any TrueType
+        or OpenType font on your machine straight into the artwork, which is
+        what putting your own lettering on a pedal icon or a logo tile needs.
+
+        `over` composites onto the picture that is there; with it off the slot
+        is cleared to transparent first and only the text remains. `size` 0
+        means "as large as fits".
+        """
+        from PIL import ImageDraw, ImageFont
+        n = w * h * 3
+        if off < 0 or off + n > len(self.body):
+            raise ValueError("that slot is not inside the payload")
+        base = gfx_index.decode(self.body, off, w, h) if over             else Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        im = base.convert('RGBA')
+        if text:
+            font = self._font(font_path, size, text, w, h, outline)
+            d = ImageDraw.Draw(im)
+            box = d.textbbox((0, 0), text, font=font, stroke_width=outline)
+            tw, th = box[2] - box[0], box[3] - box[1]
+            x = {'left': 0, 'right': w - tw}.get(align, (w - tw) // 2) - box[0]
+            y = (h - th) // 2 - box[1] + int(dy)
+            d.text((x, y), text, font=font, fill=tuple(color) + (255,),
+                   stroke_width=outline, stroke_fill=tuple(outline_color) + (255,))
+        if preview:
+            return im
+        original = self.orig[off:off + n]
+        self.body[off:off + n] = gfx_index.encode(im, w, h, original, keep_alpha)
+        self.edits += 1
+        return im
+
+    @staticmethod
+    def _font(path, size, text, w, h, outline=0):
+        from PIL import ImageDraw, ImageFont
+        if not path:
+            return ImageFont.load_default()
+        if size:
+            return ImageFont.truetype(path, size)
+        # "as large as fits": grow until the text stops fitting the slot
+        best = ImageFont.truetype(path, 8)
+        probe = Image.new('L', (1, 1))
+        d = ImageDraw.Draw(probe)
+        for pt in range(8, max(10, h * 3)):
+            f = ImageFont.truetype(path, pt)
+            b = d.textbbox((0, 0), text, font=f, stroke_width=outline)
+            if b[2] - b[0] > w - 2 or b[3] - b[1] > h - 2:
+                break
+            best = f
+        return best
+
     def put_string(self, off, text):
         s = next((x for x in self.strings if x['off'] == off), None)
         if s is None:
@@ -750,58 +835,119 @@ class Project(object):
         self.scan_strings()
 
     # ---- build ---------------------------------------------------------
-    def apply_texture(self, im, scope=None, mode='replace', keep_alpha=True,
-                      fit='tile'):
-        """Lay one image over the colour of every pixel in every graphics region.
+    def targets(self, scope=None):
+        """Every asset a bulk edit should reach, as (label, off, w, h).
 
-        This is deliberately not the tile replacer. That one walks a region in
-        fixed w*h steps, so it only ever reaches things that happen to sit on
-        that grid; regions hold images of several sizes packed with no
-        separator, and everything off the grid is left behind. Here the unit is
-        the pixel, so an overlay reaches every asset in the image whatever shape
-        it is.
-
-        Alpha is left alone by default, which is what keeps the artwork's
-        silhouettes: only the colour underneath them changes.
+        The indexed images first, because those are exact, then whatever the
+        region scan turns up outside them - a region is taken whole, since
+        inside it nothing says where one picture ends.
         """
+        out = []
+        covered = []
+        for d in self.images:
+            if d['grade'] == 'junk':
+                continue
+            out.append(('image %d' % d['id'], d['off'], d['w'], d['h']))
+            covered.append((d['hdr'], d['off'] + d['size']))
+        for r in self.regions:
+            if any(a <= r['off'] < b for a, b in covered):
+                continue
+            rows = (r['end'] - r['off']) // (r['width'] * 3)
+            if rows > 0:
+                out.append(('region %d' % r['id'], r['off'], r['width'], rows))
+        if scope:
+            out = [t for i, t in enumerate(out) if i in scope]
+        return out
+
+    def apply_texture(self, im, scope=None, mode='replace', keep_alpha=True,
+                      fit='stretch', opacity=1.0):
+        """Lay one image over the colour of every asset in the firmware.
+
+        Per asset, not per region. The old version walked a region in payload
+        order and tiled the texture along it, so each icon in the region got
+        whatever slice of the texture happened to line up with its bytes -
+        different for every icon, and nothing at all for the images the region
+        scan does not cover, which since the index arrived is most of them.
+        Here every image gets the whole texture fitted to its own frame, so a
+        sheet of icons comes out looking like a set.
+
+        `fit`: stretch to the image, tile across it, or cover it without
+        distorting the aspect. `mode`: replace the colour outright, or multiply
+        into it, which keeps the artwork's shading and reads as a tint.
+        `opacity`: how far to go towards the texture, 0 to 1 - the result is
+        mixed with the colour that was there, so 0.3 tints the artwork and 1
+        overwrites it. Alpha is left alone by default; that is what keeps the
+        silhouettes.
+        """
+        if _np is None:
+            raise ValueError("this needs numpy")
         im = im.convert('RGB')
-        tw, th = im.size
-        if tw < 1 or th < 1:
+        if im.size[0] < 1 or im.size[1] < 1:
             raise ValueError("empty texture")
-        regions = self.regions if scope is None else [
-            r for r in self.regions if r['id'] in scope]
-        if not regions:
-            raise ValueError("no regions selected")
-        tex = im.load()
-        touched = 0
-        for r in regions:
-            off, end, w = r['off'], r['end'], r['width']
-            npx = (end - off) // 3
-            if fit == 'stretch':
-                rows = max(1, npx // w)
-            for i in range(npx):
-                x, y = i % w, i // w
-                if fit == 'stretch':
-                    sx = x * tw // w
-                    sy = y * th // max(rows, 1)
-                else:
-                    sx, sy = x % tw, y % th
-                cr, cg, cb = tex[min(sx, tw - 1), min(sy, th - 1)]
-                o = off + i * 3
-                if mode == 'multiply':
-                    c = self.body[o] | (self.body[o + 1] << 8)
-                    orr = ((c >> 11) & 0x1F) * 255 // 31
-                    og = ((c >> 5) & 0x3F) * 255 // 63
-                    ob = (c & 0x1F) * 255 // 31
-                    cr, cg, cb = cr * orr // 255, cg * og // 255, cb * ob // 255
-                v = ((cr >> 3) << 11) | ((cg >> 2) << 5) | (cb >> 3)
-                self.body[o] = v & 0xFF
-                self.body[o + 1] = v >> 8
-                if not keep_alpha:
-                    self.body[o + 2] = 255
-            touched += npx
-            self.edits += 1
-        return {'regions': len(regions), 'pixels': touched}
+        targets = self.targets(scope)
+        if not targets:
+            raise ValueError("nothing to apply it to")
+        done = 0
+        pixels = 0
+        for _label, off, w, h in targets:
+            n = w * h * 3
+            if off < 0 or off + n > len(self.body):
+                continue
+            sec = self.section_of(off)
+            if sec is None or off + n > sec.off + sec.len:
+                continue
+            tex = self._fit_texture(im, w, h, fit)
+            a = _np.frombuffer(bytes(self.body[off:off + n]),
+                               dtype=_np.uint8).reshape(h * w, 3).copy()
+            r = tex[:, 0].astype(_np.uint16)
+            g = tex[:, 1].astype(_np.uint16)
+            b = tex[:, 2].astype(_np.uint16)
+            if mode == 'multiply':
+                c = a[:, 0].astype(_np.uint16) | (a[:, 1].astype(_np.uint16) << 8)
+                r = r * (((c >> 11) & 0x1F) * 255 // 31) // 255
+                g = g * (((c >> 5) & 0x3F) * 255 // 63) // 255
+                b = b * ((c & 0x1F) * 255 // 31) // 255
+            if opacity < 1.0:
+                c = a[:, 0].astype(_np.uint16) | (a[:, 1].astype(_np.uint16) << 8)
+                orr = ((c >> 11) & 0x1F) * 255 // 31
+                og = ((c >> 5) & 0x3F) * 255 // 63
+                ob = (c & 0x1F) * 255 // 31
+                k = float(opacity)
+                r = (r * k + orr * (1.0 - k)).astype(_np.uint16)
+                g = (g * k + og * (1.0 - k)).astype(_np.uint16)
+                b = (b * k + ob * (1.0 - k)).astype(_np.uint16)
+            v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+            a[:, 0] = v & 0xFF
+            a[:, 1] = v >> 8
+            if not keep_alpha:
+                a[:, 2] = 255
+            self.body[off:off + n] = a.tobytes()
+            done += 1
+            pixels += w * h
+        self.edits += done
+        return {'regions': done, 'targets': len(targets), 'pixels': pixels}
+
+    @staticmethod
+    def _fit_texture(im, w, h, fit):
+        """The texture as (w*h, 3) uint8, framed to one image."""
+        if fit == 'tile':
+            tw, th = im.size
+            canvas = Image.new('RGB', (w, h))
+            for y in range(0, h, th):
+                for x in range(0, w, tw):
+                    canvas.paste(im, (x, y))
+            out = canvas
+        elif fit == 'cover':
+            tw, th = im.size
+            s = max(w / float(tw), h / float(th))
+            r = im.resize((max(1, int(tw * s)), max(1, int(th * s))),
+                          Image.LANCZOS)
+            x = (r.size[0] - w) // 2
+            y = (r.size[1] - h) // 2
+            out = r.crop((x, y, x + w, y + h))
+        else:
+            out = im.resize((w, h), Image.LANCZOS)
+        return _np.frombuffer(out.tobytes(), dtype=_np.uint8).reshape(w * h, 3)
 
     def build(self, out_path):
         fw = self.fw
@@ -955,6 +1101,29 @@ class Handler(BaseHTTPRequestHandler):
                 span = min(span, len(PROJECT.body) - off - 1024)
                 w = PROJECT.alpha_width(off, max(span, 24576))
                 return self._json({'off': off, 'width': w})
+            if u.path == '/api/fonts':
+                return self._json({'items': fonts_available(),
+                                   'dir': FONT_DIR})
+            if u.path == '/api/textpreview':
+                off = int(q['off'][0], 0)
+                w = int(q['w'][0]); h = int(q['h'][0])
+                im = PROJECT.draw_text(
+                    off, w, h, q.get('text', [''])[0],
+                    font_path=q.get('font', [None])[0] or None,
+                    size=int(q.get('size', ['0'])[0]),
+                    color=_rgb(q.get('color', ['#ffffff'])[0]),
+                    align=q.get('align', ['center'])[0],
+                    over=q.get('over', ['1'])[0] == '1',
+                    outline=int(q.get('outline', ['0'])[0]),
+                    outline_color=_rgb(q.get('ocolor', ['#000000'])[0]),
+                    dy=int(q.get('dy', ['0'])[0]),
+                    preview=True)
+                scale = int(q.get('scale', ['1'])[0])
+                if scale > 1:
+                    im = im.resize((w * scale, h * scale), Image.NEAREST)
+                buf = io.BytesIO()
+                im.save(buf, 'PNG')
+                return self._send(200, buf.getvalue(), 'image/png')
             if u.path == '/api/suitefont':
                 # Suite's own typeface, read from its install. Nothing is copied
                 # anywhere: it is served straight from Program Files so Studio
@@ -1083,6 +1252,34 @@ class Handler(BaseHTTPRequestHandler):
                 PROJECT.put_image(int(data['off']), int(data['w']), int(data['h']),
                                   im, bool(data.get('preserve_alpha', True)))
                 return self._json({'ok': True, 'edits': PROJECT.edits})
+            if u.path == '/api/text':
+                PROJECT.draw_text(
+                    int(data['off']), int(data['w']), int(data['h']),
+                    data.get('text', ''),
+                    font_path=data.get('font') or None,
+                    size=int(data.get('size', 0)),
+                    color=_rgb(data.get('color', '#ffffff')),
+                    align=data.get('align', 'center'),
+                    over=bool(data.get('over', True)),
+                    keep_alpha=bool(data.get('keep_alpha', False)),
+                    outline=int(data.get('outline', 0)),
+                    outline_color=_rgb(data.get('ocolor', '#000000')),
+                    dy=int(data.get('dy', 0)))
+                return self._json({'ok': True, 'edits': PROJECT.edits})
+            if u.path == '/api/font_upload':
+                name = os.path.basename(data['name']).replace('..', '')
+                if not name.lower().endswith(('.ttf', '.otf')):
+                    raise ValueError("a font has to be .ttf or .otf")
+                if not os.path.isdir(FONT_DIR):
+                    os.makedirs(FONT_DIR)
+                raw = base64.b64decode(data['data'].split(',')[-1])
+                path = os.path.join(FONT_DIR, name)
+                open(path, 'wb').write(raw)
+                # opening it is the check that it is really a font
+                from PIL import ImageFont
+                ImageFont.truetype(path, 16)
+                return self._json({'ok': True, 'path': path, 'name': name,
+                                   'fonts': fonts_available()})
             if u.path == '/api/replace_gif':
                 raw = base64.b64decode(data['gif'].split(',')[-1])
                 r = PROJECT.put_gif(int(data.get('i', 0)), raw)
@@ -1114,7 +1311,8 @@ class Handler(BaseHTTPRequestHandler):
                     scope=set(scope) if scope else None,
                     mode=data.get('mode', 'replace'),
                     keep_alpha=bool(data.get('keep_alpha', True)),
-                    fit=data.get('fit', 'tile'))
+                    fit=data.get('fit', 'stretch'),
+                    opacity=max(0.0, min(1.0, float(data.get('opacity', 1.0)))))
                 res['edits'] = PROJECT.edits
                 res['ok'] = True
                 return self._json(res)

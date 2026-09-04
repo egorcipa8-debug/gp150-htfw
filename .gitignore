@@ -8,3 +8,6 @@ gfx/
 __pycache__/
 *.pyc
 studio/__pycache__/
+
+# fonts people add to Studio are theirs, not ours
+studio/fonts/

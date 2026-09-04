@@ -129,6 +129,23 @@ no network access of any kind.
   a photograph as colourful at every phase, which is what left four regions two
   bytes short and wearing a magenta rim. *Keep alpha byte* copies the alpha byte of every pixel from the original,
   so icon shapes survive a recolour.
+- **Texture** — lay an image over the colour of every asset at once. Applied
+  *per image*: each entry in the index gets the whole texture fitted to its own
+  frame, so a sheet of icons comes out looking like a set rather than like a
+  strip cut at random — which is what the old per-region version produced, and
+  it missed every image the region scan does not cover. *Opacity* mixes the
+  result back into the colour that was there, so 30% recolours without erasing
+  the drawing, *multiply* keeps the shading, and *keep alpha* leaves every
+  silhouette intact.
+- **Font** — draw text into any image slot with **any TrueType or OpenType font
+  on your machine**, or one you add: pick a slot from the index, type, choose
+  size (0 = as large as fits), colour, outline and alignment, and write it in.
+  *Draw over* composites onto the picture; with it off the slot is cleared and
+  only the lettering remains. The pedal's own UI font is **not** in the file —
+  not as 1-bit glyphs, not as an anti-aliased sheet, not behind a glyph
+  descriptor table; every 32 KB of the payload was rendered as a bitmap and
+  looked at, and the structural searches came back empty. So the menus cannot be
+  re-typefaced yet, and this tab does the thing that is possible instead.
 - **Text** — the string tables, recovered as *chains*: NUL-terminated printable runs
   packed one after another with only a few bytes of padding between them. That shape
   is what a table looks like and an isolated printable run inside code never has it,
@@ -411,6 +428,43 @@ gif_tool.py inject  <fw.bin> <in.gif> <out.bin> [n]
 The slot cannot grow, but a GIF reader stops at its trailer, so a smaller
 animation padded with zeros is a valid replacement. Studio shows it animated at
 the top of the Graphics tab and takes a new one on a click.
+
+### `tools/gif_fit.py`
+
+Squeezing an animation into that slot. It is fixed at 474 509 bytes and 320x240,
+so an 18 MB clip has to lose 97% of itself, and there are only three places to
+take it from - frames, palette, picture size. This tries the first two against
+the budget and says what it gave up.
+
+```
+gif_fit.py fit <in.gif> <out.gif> --slot <fw.bin>
+                   [--size 320x240] [--fit letterbox|crop|stretch]
+                   [--colors N] [--frames N] [--fps N] [--clip a:b]
+                   [--quant octree|maxcov|medcut] [--dither]
+```
+
+```
+slot in deploy-test.bin: 474509 bytes, 320x240
+  128 colours ->  42 frames,  461889 bytes (97% of the slot)
+   64 colours ->  50 frames,  459377 bytes (97% of the slot)
+   32 colours -> 124 frames,  468859 bytes (99% of the slot)
+   16 colours -> 141 frames,  469198 bytes (99% of the slot)
+```
+
+Two things decide the result, and neither is obvious. **The quantiser matters
+more than the palette size**: median cut - what Pillow's `convert('P', ADAPTIVE)`
+does, and what most scripts therefore use - spends its palette where the pixels
+are, so a clip with a dark background gets thirty shades of near-black and
+nothing left for the gold and pink the picture is actually about. The result is
+recognisable and completely desaturated. Octree keeps the hues, and on this clip
+it also gave **124 frames instead of 41** at the same 32 colours, because
+flatter areas compress better. **Dithering is off by default** for the same
+reason: its noise is exactly what LZW cannot compress, and it costs a third of
+the file - a third that buys frames.
+
+It writes the shape of GIF the firmware already carries: full-size frames, one
+global palette, no local colour tables, no transparency, no disposal tricks. The
+stock animation is exactly that, so it is the shape known to play.
 
 ### `tools/gfx_tool.py`
 
