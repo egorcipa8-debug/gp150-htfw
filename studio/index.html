@@ -2,13 +2,20 @@
 <meta charset="utf-8">
 <title>GP-150 Studio</title>
 <style>
+/* Valeton Suite's own palette, sampled from its shipped artwork: near-white
+   #FCFCFC on greys #181818 / #242424 / #303030 with #3C3C3C lines, and a single
+   blue accent that appears as #2478FC, #186CE4 and #3C84F0 across its assets.
+   The typeface is Suite's own Source-regular.OTF, served from its install. */
+@font-face{font-family:"SuiteSource";
+  src:url("/api/suitefont") format("opentype");font-display:swap}
 :root{
-  --bg:#14161b; --panel:#1b1e25; --panel2:#22262f; --line:#2e3440;
-  --ink:#e6e9ef; --dim:#98a0b0; --accent:#5b9dff; --good:#4ec98a; --warn:#e8b84b; --bad:#e86b5b;
+  --bg:#181818; --panel:#242424; --panel2:#303030; --line:#3C3C3C;
+  --ink:#FCFCFC; --dim:#9A9A9A; --accent:#2478FC; --accent2:#3C84F0;
+  --good:#3FB980; --warn:#E8B84B; --bad:#E8564B;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
-     font:13px/1.5 "Segoe UI",system-ui,sans-serif}
+     font:13px/1.5 "SuiteSource","Source Sans Pro","Segoe UI",system-ui,sans-serif}
 header{display:flex;align-items:center;gap:14px;padding:10px 16px;
        background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
 h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px}
@@ -18,11 +25,11 @@ h1 span{color:var(--dim);font-weight:400}
 .spacer{flex:1}
 button{background:var(--panel2);color:var(--ink);border:1px solid var(--line);
        border-radius:6px;padding:6px 12px;cursor:pointer;font:inherit}
-button:hover{border-color:#3d4756;background:#272c36}
-button.primary{background:var(--accent);border-color:var(--accent);color:#0d1520;font-weight:600}
-button.primary:hover{background:#7bb0ff}
+button:hover{border-color:#4A4A4A;background:#383838}
+button.primary{background:var(--accent);border-color:var(--accent);color:#FFF;font-weight:600}
+button.primary:hover{background:var(--accent2)}
 button:disabled{opacity:.45;cursor:default}
-input,select{background:#12141a;color:var(--ink);border:1px solid var(--line);
+input,select{background:#1C1C1C;color:var(--ink);border:1px solid var(--line);
              border-radius:5px;padding:5px 8px;font:inherit}
 input[type=number]{width:74px}
 nav{display:flex;gap:2px;padding:0 16px;background:var(--panel);border-bottom:1px solid var(--line)}
@@ -31,12 +38,15 @@ nav a.on{color:var(--ink);border-bottom-color:var(--accent)}
 main{padding:16px}
 .row{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:14px}
-.grid{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
-.tile{background:#0e1015;border:1px solid var(--line);border-radius:6px;padding:6px;
-      cursor:pointer;text-align:center;position:relative}
+.grid{display:flex;flex-wrap:wrap;align-items:flex-start;gap:10px;margin-top:12px}
+.tools{display:none}
+.tools.on{display:block}
+.tools .row{margin-bottom:8px}
+.tile{background:#1C1C1C;border:1px solid var(--line);border-radius:6px;padding:6px;
+      cursor:pointer;text-align:center;position:relative;align-self:flex-start}
 .tile:hover{border-color:var(--accent)}
 .tile img{display:block;image-rendering:pixelated;background:
-  repeating-conic-gradient(#22262f 0 25%,#1a1d24 0 50%) 50%/12px 12px}
+  repeating-conic-gradient(#303030 0 25%,#242424 0 50%) 50%/12px 12px}
 .tile .n{color:var(--dim);font-size:11px;margin-top:4px}
 .tile.dirty{border-color:var(--good)}
 .tile.dirty .n{color:var(--good)}
@@ -47,8 +57,8 @@ td.off{color:var(--dim);font-family:Consolas,monospace;white-space:nowrap}
 td input{width:100%}
 .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;
      background:var(--panel2);color:var(--dim);border:1px solid var(--line)}
-.tag.ok{color:var(--good);border-color:#2c5f45}
-.tag.no{color:var(--bad);border-color:#6b3630}
+.tag.ok{color:var(--good);border-color:#2E6B4F}
+.tag.no{color:var(--bad);border-color:#6B3630}
 .hint{color:var(--dim);font-size:12px;margin-top:6px}
 #log{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
      max-height:130px;overflow:auto;white-space:pre-wrap}
@@ -57,7 +67,7 @@ dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);
        border-radius:10px;padding:16px;min-width:460px}
 dialog::backdrop{background:#0009}
 .list{max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:6px;margin-top:8px}
-.list div{padding:5px 10px;cursor:pointer;border-bottom:1px solid #23272f}
+.list div{padding:5px 10px;cursor:pointer;border-bottom:1px solid #2E2E2E}
 .list div:hover{background:var(--panel2)}
 </style>
 
@@ -68,7 +78,8 @@ dialog::backdrop{background:#0009}
   <span class="tag" id="edits">0 edits</span>
   <button onclick="openDlg()">Open…</button>
   <button onclick="revert()">Revert</button>
-  <button class="primary" onclick="buildDlg()">Build…</button>
+  <button onclick="buildDlg()">Build…</button>
+  <button class="primary" onclick="deployDlg()">Build and Deploy</button>
 </header>
 
 <nav>
@@ -76,13 +87,19 @@ dialog::backdrop{background:#0009}
   <a data-tab="str" onclick="tab('str')">Text</a>
   <a data-tab="fnt" onclick="tab('fnt')">Font</a>
   <a data-tab="inf" onclick="tab('inf')">Image info</a>
+  <a data-tab="dev" onclick="tab('dev')">Device</a>
 </nav>
 
 <main>
   <!-- ---------------- graphics ---------------- -->
   <section id="gfx">
     <div class="card">
-      <div class="row">
+            <div class="row" style="gap:8px">
+        <button onclick="toggleTools()" title="offsets, widths, texture overlay">Tools</button>
+        <span class="meta" id="gfxnote"></span>
+      </div>
+      <div class="tools" id="tools">
+<div class="row">
         <label>Known slot
           <select id="preset" onchange="usePreset()">
             <option value="">— pick —</option>
@@ -99,7 +116,10 @@ dialog::backdrop{background:#0009}
         <label>Height <input type="number" id="h" min="4" max="480" oninput="drawTiles()"></label>
         <label>View
           <select id="mode" onchange="drawTiles()">
-            <option value="strip" selected>strip</option>
+            <option value="curated" selected>images (from the firmware index)</option>
+            <option value="gallery">index + everything the scan finds</option>
+            <option value="icons">icons in this region</option>
+            <option value="strip">strip</option>
             <option value="tiles">tiles</option>
           </select>
         </label>
@@ -113,6 +133,28 @@ dialog::backdrop{background:#0009}
         <button onclick="assetDlg()">Suite artwork…</button>
         <button onclick="replaceAll()">Replace every tile…</button>
       </div>
+      <div class="row">
+        <b class="meta">Texture overlay</b>
+        <input type="file" id="texfile" accept="image/*">
+        <label>Mode <select id="texmode">
+          <option value="replace">replace colour</option>
+          <option value="multiply">multiply (tint)</option>
+        </select></label>
+        <label>Fit <select id="texfit">
+          <option value="tile">tile</option>
+          <option value="stretch">stretch per region</option>
+        </select></label>
+        <label class="meta"><input type="checkbox" id="texalpha" checked> keep alpha</label>
+        <label class="meta"><input type="checkbox" id="texall" checked> every region</label>
+        <button class="primary" onclick="applyTexture()">Apply texture</button>
+      </div>
+      <div class="hint">
+        The overlay works per pixel, so it reaches <b>every</b> asset in the image.
+        <b>Replace every tile</b> cannot: it walks a region in fixed width&times;height
+        steps, and regions hold images of several sizes packed with no separator, so
+        anything not sitting on that grid is skipped. <b>Keep alpha</b> leaves every
+        silhouette intact and changes only the colour beneath it.
+      </div>
       <div class="hint">
         Image boundaries in the firmware are not labelled, so offset, width and height are
         estimates — nudge them until the tiles line up, then click one to replace it.
@@ -123,11 +165,13 @@ dialog::backdrop{background:#0009}
         preserves icon shapes and anything else encoded there; turn it off only deliberately.
         <b>Shift+click</b> a tile to replace it from Valeton Suite's own artwork — the same
         images at far higher resolution than the firmware carries.
-        Images are stacked vertically at varying heights rather than on a grid, so
-        <b>strip</b> view is usually the one you want: click a row to move the offset there,
-        set Height, then Replace.
+        <b>icons (auto)</b> splits the region into separate images at the blank rows between
+        them and shows each one framed — a region rendered as one continuous strip reads as
+        torn garbage, because the strip glues unrelated images together and runs on into
+        whatever non-image data follows. Click an icon to load its exact offset and height.
       </div>
-      <div class="grid" id="tiles"></div>
+            </div>
+<div class="grid" id="tiles"></div>
     </div>
   </section>
 
@@ -135,17 +179,53 @@ dialog::backdrop{background:#0009}
   <section id="str" hidden>
     <div class="card">
       <div class="row">
-        <input id="q" placeholder="search text…" style="width:280px" oninput="loadStrings()">
+        <input id="q" placeholder="найти…" style="width:220px" oninput="loadStrings()" onkeydown="strKeys(event)">
+        <input id="qr" placeholder="заменить на…" style="width:220px" onkeydown="strKeys(event)">
+        <button id="prev" title="предыдущее совпадение (Shift+Enter)" onclick="stepMatch(-1)">↑</button>
+        <button id="next" title="следующее совпадение (Enter)" onclick="stepMatch(1)">↓</button>
+        <button onclick="strReplaceOne()">Заменить</button>
+        <button onclick="strReplaceAll()">Заменить все</button>
+        <label class="meta"><input type="checkbox" id="qcase" onchange="loadStrings()"> Aa</label>
         <span class="meta" id="scount"></span>
       </div>
       <div class="hint">Only runs that look like real text and sit among other strings are
         listed — the firmware is full of printable byte sequences that are not text at all.
         Edits are written in place; the room column is the hard limit in bytes.
-        Press Enter to apply.</div>
+        Enter в строке — применить её. «Заменить» меняет подстроку только в текущем
+        совпадении (подсвечено), «Заменить все» — во всех найденных. Строка, которая
+        после замены не влезает в room, пропускается и попадает в отчёт.</div>
       <table id="stbl"><thead><tr>
         <th style="width:110px">offset</th><th>text</th>
         <th style="width:80px">bytes</th><th style="width:80px">room</th>
       </tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <!-- ---------------- device ---------------- -->
+  <section id="dev" hidden>
+    <div class="card">
+      <div class="row">
+        <input id="dvpath" placeholder="firmware to flash…" style="flex:1;min-width:320px">
+        <button onclick="devPick()">Browse…</button>
+        <button onclick="devCheck()">Check</button>
+        <button onclick="devScan()">Rescan ports</button>
+      </div>
+      <div class="hint">
+        This drives Valeton Suite's own device library, so a file is validated by
+        exactly the code that validates it in Suite. <b>Check</b> reports the vendor's
+        <code>checkCrc()</code>: 0 accepted, −1 checksum mismatch, −2 truncated. A build
+        whose whole-file CRC was not restamped fails here while every region CRC still
+        verifies — that is the failure this tab exists to catch.
+      </div>
+      <div id="dvstate" class="hint"></div>
+      <div class="row">
+        <button id="dvflash" onclick="devFlash()">Flash device</button>
+        <label class="meta"><input type="checkbox" id="dvall"> show port polling in the log</label>
+        <label class="meta"><input type="checkbox" id="dvfollow" checked onchange="devFollow()"> follow log</label>
+        <span class="meta" id="dvlogmeta"></span>
+      </div>
+      <pre id="dvlog" style="max-height:340px;overflow:auto;background:#111318;
+           padding:10px;border-radius:6px;font-size:12px;line-height:1.35"></pre>
     </div>
   </section>
 
@@ -209,8 +289,8 @@ async function api(p,o){
   return j}
 
 function tab(n){document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.tab===n));
-  ['gfx','str','fnt','inf'].forEach(s=>$('#'+s).hidden=(s!==n));
-  if(n==='str')loadStrings(); if(n==='inf')fillInfo();}
+  ['gfx','str','fnt','inf','dev'].forEach(s=>$('#'+s).hidden=(s!==n));
+  if(n==='str')loadStrings(); if(n==='inf')fillInfo(); if(n==='dev')devInit();}
 
 async function refresh(){
   ST=await api('/api/state');
@@ -254,7 +334,12 @@ function usePreset(){
 }
 async function autoWidth(){
   const off=curOff();
-  const d=await api(`/api/stride?off=${off}`);
+  // Measure locally, not over the whole region: a region can hold groups of
+  // different widths packed with no separator between them, so a stride taken
+  // across all of it describes whichever group is largest, not the one you are
+  // looking at.
+  const span=Math.min(24576,Math.max(8192,curEnd()-off));
+  const d=await api(`/api/stride?off=${off}&span=${span}`);
   const avail=Math.max(0,curEnd()-off);
   const maxRows=Math.floor(avail/(d.width*3));
   $('#w').value=d.width;
@@ -276,6 +361,9 @@ function curEnd(){ return REG?REG.end:curOff()+1<<20; }
 function drawTiles(){
   if(!REG)return;
   if($('#mode').value==='strip')return drawStrip();
+  if($('#mode').value==='curated')return drawCurated();
+  if($('#mode').value==='gallery')return drawGallery();
+  if($('#mode').value==='icons')return drawIcons();
   const w=+$('#w').value,h=+$('#h').value,z=+$('#zoom').value;
   if(w<4||h<4)return;
   const start=curOff();
@@ -301,6 +389,115 @@ function drawTiles(){
       <a href="#" onclick="$('#h').value=${Math.max(4,rows)};drawTiles();return false"
          style="color:var(--accent)">use ${Math.max(4,rows)}</a>.</div>`;
   }
+}
+
+/* The firmware's own image index: every stored image is preceded by a 12-byte
+   descriptor carrying its width and height, so this list is read out of the
+   file rather than guessed at. Entries the loader allocated but never filled
+   decode as noise and are marked, not hidden. */
+function toggleTools(){
+  const t=$('#tools'); t.classList.toggle('on');
+}
+
+async function drawCurated(){
+  const g=$('#tiles'), z=+$('#zoom').value;
+  g.innerHTML='';
+  let d;
+  try{ d=await api('/api/curated'); }
+  catch(_){ g.innerHTML='<div class="hint">failed</div>'; return }
+  if(!d.items.length){
+    g.innerHTML=`<div class="hint">No image descriptors in this file. Use
+      <b>index + everything the scan finds</b> — and expect to sift it.</div>`;
+    return;
+  }
+  d.items.forEach(ic=>{
+    const el=document.createElement('div');
+    el.className='tile'+(DIRTY.has(ic.off)?' dirty':'');
+    el.innerHTML=`<img src="/api/image?off=${ic.off}&w=${ic.w}&h=${ic.h}&scale=${z}&t=${Date.now()}"
+                       width="${ic.w*z}" height="${ic.h*z}">
+                  <div class="n">${ic.w}&times;${ic.h}${ic.filled===false?' · unfilled':''}</div>`;
+    el.onclick=e=>{
+      $('#off').value=ic.off.toString(16).toUpperCase();
+      $('#w').value=ic.w; $('#h').value=ic.h;
+      if(e.shiftKey) pickFromAssets(ic.off,ic.w,ic.h); else replaceOne(ic.off,ic.w,ic.h);
+    };
+    el.title=`${ic.name}  0x${ic.off.toString(16).toUpperCase()}
+`
+            +'click: replace from a file   ·   shift+click: pick Suite artwork';
+    g.appendChild(el);
+  });
+  const filled=d.items.filter(x=>x.filled!==false).length;
+  log(`${filled} images from the firmware index`+
+      (d.items.length>filled?`, ${d.items.length-filled} unfilled blocks`:''),'g');
+}
+
+/* The default view: every image the scan finds, everywhere in the firmware, on
+   one page. No region to choose, no width to nudge - click a picture, replace
+   it. The per-region controls are still there for the cases the scan gets
+   wrong, but nothing routine should need them. */
+async function drawGallery(){
+  const g=$('#tiles'), z=+$('#zoom').value;
+  g.innerHTML='<div class="hint">scanning the whole image…</div>';
+  let d;
+  try{ d=await api('/api/gallery'); }
+  catch(_){ g.innerHTML='<div class="hint">scan failed</div>'; return }
+  g.innerHTML='';
+  if(!d.items.length){ g.innerHTML='<div class="hint">nothing found</div>'; return }
+  d.items.forEach(ic=>{
+    const el=document.createElement('div');
+    el.className='tile'+(DIRTY.has(ic.off)?' dirty':'');
+    el.innerHTML=`<img src="/api/image?off=${ic.off}&w=${ic.w}&h=${ic.h}&scale=${z}&t=${Date.now()}"
+                       width="${ic.w*z}" height="${ic.h*z}">
+                  <div class="n">${ic.w}&times;${ic.h}${ic.filled===false?' · unfilled':''}</div>`;
+    el.onclick=e=>{
+      $('#off').value=ic.off.toString(16).toUpperCase();
+      $('#w').value=ic.w; $('#h').value=ic.h;
+      if(e.shiftKey) pickFromAssets(ic.off,ic.w,ic.h); else replaceOne(ic.off,ic.w,ic.h);
+    };
+    el.title=`0x${ic.off.toString(16).toUpperCase()}  ${ic.w}×${ic.h}
+`
+            +'click: replace from a file   ·   shift+click: pick Suite artwork';
+    g.appendChild(el);
+  });
+  log(`${d.items.length} images — ${d.indexed||0} from the index, `+
+      `the rest from the scan across ${d.regions} regions`,'g');
+}
+
+/* Auto-split view. The region is cut at the blank rows that separate stored
+   images, so every icon is shown on its own instead of being glued into a strip
+   with its neighbours and with whatever non-image data follows the region. */
+async function drawIcons(){
+  const w=+$('#w').value, z=+$('#zoom').value;
+  const g=$('#tiles');
+  if(w<4){g.innerHTML='<div class="hint">set a width first</div>';return}
+  g.innerHTML='<div class="hint">scanning…</div>';
+  let d;
+  try{ d=await api(`/api/icons?off=${curOff()}&end=${curEnd()}&w=${w}&minh=6`); }
+  catch(_){ g.innerHTML='<div class="hint">scan failed</div>'; return }
+  g.innerHTML='';
+  if(!d.icons.length){
+    g.innerHTML=`<div class="hint">Nothing separated out at width ${w}. Either the width is
+      wrong for this region — try <b>Auto</b> — or the region is one continuous image, in
+      which case use <b>strip</b>.</div>`;
+    return;
+  }
+  d.icons.forEach((ic,k)=>{
+    const el=document.createElement('div');
+    el.className='tile'+(DIRTY.has(ic.off)?' dirty':'');
+    el.innerHTML=`<img src="/api/image?off=${ic.off}&w=${ic.w}&h=${ic.h}&scale=${z}&t=${Date.now()}"
+                       width="${ic.w*z}" height="${ic.h*z}">
+                  <div class="n">${k} · 0x${ic.off.toString(16).toUpperCase()} · ${ic.w}&times;${ic.h}</div>`;
+    el.onclick=e=>{
+      $('#off').value=ic.off.toString(16).toUpperCase();
+      $('#h').value=ic.h;
+      if(e.shiftKey) pickFromAssets(ic.off,ic.w,ic.h); else replaceOne(ic.off,ic.w,ic.h);
+    };
+    el.title=`0x${ic.off.toString(16).toUpperCase()}  ${ic.w}×${ic.h}
+`
+            +'click: replace from a file   ·   shift+click: pick Suite artwork';
+    g.appendChild(el);
+  });
+  log(`${d.icons.length} images separated at width ${w}`,'g');
 }
 
 /* Images are stacked vertically with varying heights, not laid out on a grid,
@@ -374,28 +571,208 @@ async function replaceAll(){
 async function refreshEdits(){const s=await api('/api/state');
   $('#edits').textContent=s.edits+' edits';$('#edits').className='tag'+(s.edits?' ok':'');}
 
+let STR=[], CUR=-1;
+
 async function loadStrings(){
   const q=$('#q').value;
   const d=await api('/api/strings?q='+encodeURIComponent(q));
+  STR=d.items; CUR=STR.length?0:-1;
   $('#scount').textContent=`${d.total} matching, showing ${d.items.length}`;
   const tb=$('#stbl tbody');tb.innerHTML='';
-  d.items.forEach(s=>{
+  d.items.forEach((s,i)=>{
     const tr=document.createElement('tr');
     tr.innerHTML=`<td class="off">0x${s.off.toString(16).toUpperCase()}</td>
       <td><input value="${s.text.replace(/"/g,'&quot;')}"></td>
       <td>${s.len}</td><td>${s.room}</td>`;
     const inp=tr.querySelector('input');
+    inp.onfocus=()=>{CUR=i;markCur(false)};
     inp.onkeydown=async e=>{
       if(e.key!=='Enter')return;
       try{
         await api('/api/string',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({off:s.off,text:inp.value})});
+        s.text=inp.value;
         log(`✓ 0x${s.off.toString(16).toUpperCase()} = "${inp.value}"`,'g');
         inp.style.borderColor='#2c5f45'; refreshEdits();
       }catch(_){inp.style.borderColor='#6b3630'}
     };
     tb.appendChild(tr);
   });
+  markCur(false);
+}
+
+// the row the ↑/↓ buttons and "Заменить" act on
+function markCur(scroll){
+  const rows=[...$('#stbl tbody').children];
+  rows.forEach((tr,i)=>{
+    const on = i===CUR;
+    tr.style.background = on ? '#243447' : '';
+    tr.querySelector('input').style.outline = on ? '1px solid #4f7fbf' : '';
+  });
+  if(scroll && CUR>=0 && rows[CUR]) rows[CUR].scrollIntoView({block:'center'});
+}
+
+// Enter steps to the next match, Shift+Enter to the previous one; Ctrl+Enter
+// replaces the current one -- same keys the search bars of editors use.
+function strKeys(e){
+  if(e.key!=='Enter')return;
+  e.preventDefault();
+  if(e.ctrlKey) strReplaceOne(); else stepMatch(e.shiftKey?-1:1);
+}
+
+function stepMatch(d){
+  if(!STR.length)return;
+  CUR=(CUR+d+STR.length)%STR.length;
+  markCur(true);
+}
+
+async function strReplaceOne(){
+  const find=$('#q').value, repl=$('#qr').value;
+  if(!find){log('нечего искать','r');return}
+  if(CUR<0||!STR[CUR]){log('нет выбранного совпадения','r');return}
+  const s=STR[CUR];
+  try{
+    const r=await api('/api/string_replace',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({find,repl,case:$('#qcase').checked,offs:[s.off]})});
+    if(r.changed){
+      const it=r.items[0];
+      log(`✓ 0x${it.off.toString(16).toUpperCase()}  "${it.was}" → "${it.now}"`,'g');
+    }else if(r.skipped.length){
+      const k=r.skipped[0];
+      log(`✗ не влезает: нужно ${k.need} байт, room ${k.room} — "${k.want}"`,'r');
+    }else log('в этой строке нечего менять','r');
+    const keep=CUR; await loadStrings(); CUR=Math.min(keep,STR.length-1); markCur(true);
+    refreshEdits();
+  }catch(_){log('замена не удалась','r')}
+}
+
+async function strReplaceAll(){
+  const find=$('#q').value, repl=$('#qr').value;
+  if(!find){log('нечего искать','r');return}
+  if(!confirm(`Заменить "${find}" → "${repl}" во всех найденных строках?`))return;
+  try{
+    const r=await api('/api/string_replace',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({find,repl,case:$('#qcase').checked})});
+    log(`✓ заменено ${r.changed}`+(r.skipped.length?`, пропущено ${r.skipped.length} (не влезают)`:''),
+        r.changed?'g':'r');
+    r.skipped.forEach(k=>log(`   ✗ 0x${k.off.toString(16).toUpperCase()} "${k.want}" — ${k.need} > room ${k.room}`,'r'));
+    await loadStrings(); refreshEdits();
+  }catch(_){log('замена не удалась','r')}
+}
+
+let DVPOS=-1, DVTIMER=null;
+
+async function devInit(){ devScan(); if(!$('#dvpath').value && ST&&ST.path) $('#dvpath').value=ST.path; devFollow(); }
+
+async function devScan(){
+  const d=await api('/api/device');
+  const line = d.ok
+    ? `MIDI in: ${d.in.length?d.in.join(', '):'(none)'} · MIDI out: ${d.out.length?d.out.join(', '):'(none)'}`
+    : `port scan failed: ${d.error}`;
+  $('#dvstate').textContent = line + (d.ok && !d.in.length
+    ? '  — nothing listed usually means the GP-150 is unplugged, or Valeton Suite is holding it open.' : '');
+}
+
+async function devPick(){
+  const d=await api('/api/browse?dir='+encodeURIComponent($('#dvpath').value||''));
+  const p=prompt('path to the firmware file', $('#dvpath').value||'');
+  if(p) $('#dvpath').value=p;
+}
+
+async function devCheck(){
+  const p=$('#dvpath').value.trim();
+  if(!p){log('give a file first','r');return}
+  const d=await api('/api/validate?path='+encodeURIComponent(p));
+  if(!d.ok){log('check failed: '+d.error,'r');return}
+  const seal = d.sealed ? 'file CRC OK' : `file CRC STALE (stored 0x${d.stored.toString(16).toUpperCase()}, computed 0x${d.calc.toString(16).toUpperCase()})`;
+  const rc = d.rc===0 ? 'vendor checkCrc: 0 (accepted)'
+           : d.rc===null ? ('vendor check unavailable: '+(d.vendor_error||'')) 
+           : `vendor checkCrc: ${d.rc} (${d.rc===-1?'checksum mismatch':d.rc===-2?'truncated':'error'})`;
+  $('#dvstate').textContent=`${seal} · ${rc} · version ${d.version||'?'} · ${(d.size/1048576).toFixed(2)} MB`;
+  log(`${seal}; ${rc}`, d.sealed&&d.rc===0?'g':'r');
+}
+
+async function devFlash(){
+  const p=$('#dvpath').value.trim();
+  if(!p){log('give a file first','r');return}
+  if(!confirm('Write '+p+' to the device?\n\nThis rewrites the pedal firmware.'))return;
+  log('flashing '+p+' …');
+  const d=await api('/api/flash',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({path:p,confirm:true})});
+  if(d.ok) log('deviceStartUpdate returned 0 — watch the log below','g');
+  else log('not flashed: '+d.error,'r');
+}
+
+function devFollow(){
+  if(DVTIMER){clearInterval(DVTIMER);DVTIMER=null}
+  if($('#dvfollow').checked) DVTIMER=setInterval(devPoll,700);
+  devPoll();
+}
+
+async function devPoll(){
+  if($('#dev').hidden) return;
+  const d=await api(`/api/log?pos=${DVPOS}&all=${$('#dvall').checked?1:0}`);
+  const el=$('#dvlog');
+  if(!d.ok){ el.textContent=d.error||'no log'; return }
+  DVPOS=d.pos;
+  $('#dvlogmeta').textContent=`${(d.size/1048576).toFixed(1)} MB`;
+  if(d.lines.length){
+    const stick = el.scrollTop+el.clientHeight >= el.scrollHeight-30;
+    el.textContent += d.lines.join('\n')+'\n';
+    if(stick) el.scrollTop=el.scrollHeight;
+  }
+}
+
+async function deployDlg(){
+  const suggested = (ST&&ST.path) ? ST.path.replace(/\.bin$/i,'') + ' modded.bin'
+                                  : 'GP-150 modded.bin';
+  const out = prompt('Build to this file, then write it to the device:', suggested);
+  if(!out) return;
+  log('build and deploy -> '+out);
+  let d;
+  try{
+    d = await api('/api/deploy',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({out, confirm:false})});
+  }catch(e){ log('deploy failed','r'); return }
+  (d.steps||[]).forEach(x=>log('  '+x));
+  if(d.error && /not confirmed/.test(d.error)){
+    if(!confirm('Verified and ready.\n\nWrite it to the device now?')){
+      log('stopped before writing; the file is built at '+out,'g'); return;
+    }
+    d = await api('/api/deploy',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({out, confirm:true})});
+    (d.steps||[]).forEach(x=>log('  '+x));
+  }
+  if(d.ok){ log('deployed','g'); tab('dev'); }
+  else log(d.error||'deploy failed', d.built?'g':'r');
+  refreshEdits();
+}
+
+function readFileAsDataURL(f){
+  return new Promise((ok,no)=>{const r=new FileReader();
+    r.onload=()=>ok(r.result); r.onerror=no; r.readAsDataURL(f);});
+}
+
+async function applyTexture(){
+  const f=$('#texfile').files[0];
+  if(!f){log('pick an image first','r');return}
+  const every=$('#texall').checked;
+  const scope = every ? null : (REG ? [REG.id] : null);
+  if(!every && !scope){log('no region selected','r');return}
+  const what = every ? 'every region' : ('region '+REG.id);
+  if(!confirm(`Lay "${f.name}" over ${what}?`))return;
+  log('applying texture to '+what+' …');
+  const img=await readFileAsDataURL(f);
+  try{
+    const d=await api('/api/texture',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({image:img, regions:scope,
+        mode:$('#texmode').value, fit:$('#texfit').value,
+        keep_alpha:$('#texalpha').checked})});
+    log(`texture applied to ${d.regions} region(s), ${d.pixels.toLocaleString()} pixels`,'g');
+    refreshEdits(); drawTiles();
+  }catch(e){ log('texture failed','r') }
 }
 
 function drawFont(){

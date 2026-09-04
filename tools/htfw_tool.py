@@ -4,7 +4,13 @@
 # Container format, reverse engineered from GP-150 V1.0.5 and V1.1.1:
 #
 #   0x00  char[4]   "HTFW"
-#   0x04  uint32    build id (high 16 bits = 0x0001); not derived from content
+#   0x04  uint16    CRC-16/MODBUS of the whole file from offset 6, BIG-ENDIAN.
+#                   Valeton Suite's own checkCrc() validates this; a rebuild that
+#                   leaves it stale is rejected. Earlier notes called this half of
+#                   a 32-bit "build id" and said it was not derived from content -
+#                   that was wrong, and it is why every image this tool built until
+#                   now failed the vendor's check.
+#   0x06  uint16    format version, 1
 #   0x08  uint32    total file size
 #   0x0C  char[16]  model name, NUL padded ("GP-150")
 #   0x1C  'V', major, minor, patch
@@ -65,6 +71,16 @@ def _refl16(v):
         if v >> i & 1:
             r |= 1 << (15 - i)
     return r
+
+
+def seal(data):
+    """Stamp the whole-file CRC into the header. Covers everything from offset 6,
+    so it must be the last thing written."""
+    out = bytearray(data)
+    c = crc16_modbus(bytes(out[6:]))
+    out[4] = (c >> 8) & 0xFF          # big-endian, same as the region CRCs
+    out[5] = c & 0xFF
+    return bytes(out)
 
 
 def crc16_modbus(data):
@@ -228,9 +244,10 @@ def cmd_repack(orig, indir, outp):
     else:
         tail = bytes(body)
     struct.pack_into('<I', hdr, 8, len(hdr) + len(tail))
-    open(outp, 'wb').write(bytes(hdr) + tail)
-    print("written %s (%d bytes)" % (outp, len(hdr) + len(tail)))
-    print("NOTE: header field 0x04 (build id) left unchanged - purpose unknown.")
+    data = seal(bytes(hdr) + tail)
+    open(outp, 'wb').write(data)
+    print("written %s (%d bytes)" % (outp, len(data)))
+    print("  whole-file CRC at 0x04: 0x%02X%02X" % (data[4], data[5]))
     return 0
 
 

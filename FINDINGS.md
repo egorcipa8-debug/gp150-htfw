@@ -580,3 +580,76 @@ Everything now fits:
 §10 and §13 chased region `g` as the missing application. It never was. The JieLi
 part is the chip visible next to the shield can in the board photographs, with its
 own crystal and U.FL antenna connector.
+
+---
+
+## 17. The images index themselves — and the pixel order was backwards
+
+Every stored image is preceded by a **12-byte descriptor**:
+
+```
+u32 desc;   /* [7:0]   0x05, format tag: RGB565 + alpha, 3 bytes/pixel
+               [19:8]  width  * 4
+               [31:20] height * 2                                        */
+u32 size;   /* width * height * 3, always                                */
+u32 addr;   /* SDRAM address of this descriptor                          */
+            /* the pixels follow immediately                             */
+```
+
+Found by measuring drift. A sheet of pedal icons recovered a width of 80 with no
+ambiguity (row-difference score 5.1 against 11.4 for 79 and 81, everywhere in the
+region), yet each image down the sheet came out rolled **exactly four pixels**
+further right than the one above it. A constant per-image roll can only mean the
+stride is not `w*h`: the true step was 80·102 + 4 pixels, so twelve bytes sit
+between images. Those twelve bytes carry the geometry.
+
+The predicate is self-checking — `size` must equal `width * height * 3` with the
+width and height taken from two other fields of a different word, about thirty
+bits of agreement — so it can be swept over the whole payload without producing
+junk. On GP-150 V1.1.1 it finds **132 images**, 1.60 MB of pixels; 112 of them
+decode as artwork and the rest are blocks the loader allocated but never filled.
+
+### The pixel order
+
+**Colour first, then alpha:**
+
+```
+[0:2]  uint16 RGB565, little endian
+[2]    uint8  alpha
+```
+
+§ earlier notes and `gfx_tool.py`'s header said alpha-first, argued from colour
+statistics. That was wrong, and wrong in the way that is hardest to catch: reading
+the same bytes one position over still yields a recognisable icon, because the
+shape survives — it just wears the neighbouring pixel's alpha and comes out olive.
+The statistics could not settle it because they compared two readings of a
+*window* whose true first pixel was unknown. A descriptor gives the exact first
+pixel, and then the question is decided by looking once: the DST pedal is red, the
+AMP tile orange, VOL green, NAM purple. Under alpha-first every one of them is
+the same olive.
+
+This is also why the hand-checked offsets in the old curated list all sat one byte
+early — each was the alpha byte of the pixel before the image's real first pixel.
+
+### These are allocator headers, not a resource table
+
+Consecutive blocks chain: `hdr + 12 + size` is the next `hdr`. `addr` is an SDRAM
+address, and along a run of chained blocks `addr - file_offset` is **constant**:
+
+```
++0x7FFC4C4F   16 blocks   file 0x12EE4D..0x18E90D
++0x7FFC8A2F   16 blocks   file 0x1AA74D..0x1CC40D
++0x7FFC9FEF    8 blocks   file 0x0B7BA5..0x0BDC05
++0x7FFC9E63    8 blocks   file 0x1E5CE5..0x1EC9A5
+```
+
+So this part of section `b` is a **heap image copied to SDRAM verbatim** — which
+is the first linear file→`0x80000000` mapping anyone here has been able to
+demonstrate (§2 and the "what is still open" list record the failed searches).
+It is not one mapping for the whole section: the delta changes between runs, as
+it would for a heap whose blocks were allocated in several passes. Free or
+never-filled blocks are in the image too, which is why a handful of descriptors
+point at noise.
+
+`tools/gfx_index.py` implements the scan, the decode and the encode; Studio's
+Graphics tab is driven by it, and no width has to be nudged for an indexed image.

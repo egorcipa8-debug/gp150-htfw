@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 # gfx_tool.py - extract / inject GP-150 firmware graphics.
 #
-# Pixel format, reverse engineered from GP-150 V1.0.5:
-#   3 bytes per pixel, little endian:
-#     [0:2]  uint16 RGB565 colour
+# Pixel format, settled against the firmware's own image descriptors:
+#   3 bytes per pixel, COLOUR FIRST:
+#     [0:2]  uint16 RGB565 colour, little endian
 #     [2]    uint8  alpha (0 = transparent, 255 = opaque)
-#   Rows stored top to bottom, no padding, no per-image header, no compression.
+#   Rows top to bottom, no padding, no compression.
 #
-# Images live in a flat blob with an index kept somewhere else, so slot
-# geometry below was recovered by row-stride analysis, not read from the file.
+# Earlier revisions of this file had the alpha byte first. That reads the same
+# bytes one position over: it renders a recognisable icon in the wrong colours
+# (everything olive) with each pixel wearing its neighbour's alpha, and it is
+# why the hand-checked offsets that came with it all sat one byte early.
+# tools/gfx_index.py reads the 12-byte descriptor that precedes every image, so
+# the exact first pixel is known and the order is no longer a matter of taste.
+#
+# Prefer gfx_index.py: it lists every image in the file with its real width and
+# height. The slots below are the old row-stride estimates, kept only for the
+# artwork that carries no descriptor.
 #
 # Usage:
+#   gfx_tool.py index   <fw.bin>              every image the firmware describes
 #   gfx_tool.py slots
 #   gfx_tool.py extract <fw.bin> <addr> <w> <h> <out.png>
 #   gfx_tool.py inject  <fw.bin> <addr> <w> <h> <in.png> <out.bin>
@@ -20,8 +29,12 @@
 # section afterwards (the bootloader does not appear to check it, but a correct
 # image costs nothing).
 
+import os
 import sys
 import struct
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gfx_index                                            # noqa: E402
 
 try:
     from PIL import Image
@@ -84,34 +97,11 @@ def sections(blob):
 
 
 def decode(blob, addr, w, h):
-    img = Image.new('RGBA', (w, h))
-    px = img.load()
-    for y in range(h):
-        base = addr + y * w * 3
-        for x in range(w):
-            o = base + x * 3
-            if o + 2 >= len(blob):
-                return img
-            c = struct.unpack_from('<H', blob, o)[0]
-            a = blob[o + 2]
-            px[x, y] = (((c >> 11) & 0x1F) * 255 // 31,
-                        ((c >> 5) & 0x3F) * 255 // 63,
-                        (c & 0x1F) * 255 // 31, a)
-    return img
+    return gfx_index.decode(blob, addr, w, h)
 
 
 def encode(img, w, h):
-    img = img.convert('RGBA')
-    if img.size != (w, h):
-        img = img.resize((w, h), Image.LANCZOS)
-    px = img.load()
-    out = bytearray()
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = px[x, y]
-            c = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
-            out += struct.pack('<HB', c, a)
-    return bytes(out)
+    return gfx_index.encode(img, w, h)
 
 
 def cmd_slots():
@@ -159,14 +149,16 @@ def cmd_inject(fw, addr, w, h, png, out):
 if __name__ == '__main__':
     a = sys.argv[1:]
     if not a:
-        print("commands: slots | extract | inject   (see header comment)")
+        print("commands: index | slots | extract | inject   (see header comment)")
         sys.exit(1)
-    if a[0] == 'slots':
+    if a[0] == 'index' and len(a) == 2:
+        gfx_index.cmd_list(a[1])
+    elif a[0] == 'slots':
         cmd_slots()
     elif a[0] == 'extract' and len(a) == 6:
         cmd_extract(a[1], int(a[2], 0), int(a[3]), int(a[4]), a[5])
     elif a[0] == 'inject' and len(a) == 7:
         sys.exit(cmd_inject(a[1], int(a[2], 0), int(a[3]), int(a[4]), a[5], a[6]))
     else:
-        print("commands: slots | extract | inject   (see header comment)")
+        print("commands: index | slots | extract | inject   (see header comment)")
         sys.exit(1)
