@@ -223,6 +223,54 @@ suite_link.py restore    put the stock app.so back
 Writing into Program Files needs an elevated shell. A replacement of any other
 length is refused rather than fudged.
 
+### `tools/suite_map.py`
+
+What is legible in Suite's Dart snapshot. `data/app.so` is an ELF whose
+`.dynsym` names the snapshot blobs — `_kDartIsolateSnapshotData` is 4.4 MB of
+objects and `_kDartIsolateSnapshotInstructions` 6.3 MB of AOT x86-64. Reading
+the objects properly means implementing that Dart version's cluster
+deserialiser, which is what blutter does by compiling the matching SDK, and is
+not what this is.
+
+It does not have to be. **The snapshot was not built obfuscated**, so every
+library URI, class name and member name is in it as an ordinary string, and that
+maps the application:
+
+```
+package:qme10_pc                 223 source files — Suite itself
+package:ht_midi_data_protocol     28 source files — the device protocol
+package:flutter                  389, and 90 more packages
+```
+
+The protocol package is the interesting half: `src/core/protocol/` holds
+`ht_protocol_handler`, `receive_assembler`, an `ack_dispatcher`, a `negotiator`
+and `constants`; `src/core/utils/` holds `crc_utils`, `midi_codec`,
+`data_wrap_codec`, `ht_firmware_parser` and `ht_firmware_update`; `src/device/`
+has separate USB, BLE and MIDI device managers behind a `unified_device`. Suite
+itself is a Flutter app of 223 files under `Views/`, `model150/` and `utils/`,
+and `model150/` — 39 files — is where the GP-150's own data model lives.
+
+The FFI seam is exact: 18 of `5868USB.dll`'s 61 exports are named in the
+snapshot, and they are the ones this repo's own tools call — `checkCrc`,
+`connectDevice`, `deviceStartUpdate`, `sendMidiMessage`, `scanInDevice`,
+`isRealFirmware`, plus `convertNamToNambAtPath` and the SnapTone conversion
+entry points.
+
+```
+suite_map.py map                  packages, files, FFI surface
+suite_map.py files [pkg]          source files, one per line
+suite_map.py classes [--like RE]  class-shaped names
+suite_map.py ffi                  which exports the Dart side binds
+suite_map.py strings [--like RE]
+suite_map.py keys [--key N]       private names grouped by library key
+```
+
+Names are canonicalised into one unordered table, so they cannot be grouped back
+into their classes by position: what comes out is an inventory, not source.
+Private members do carry Dart's per-library key (`_bind@637311317`), which
+groups them by library — 5398 names in 614 groups — even though the key itself
+does not say which library it belongs to.
+
 ### `tools/gfx_index.py`
 
 The firmware's own image index. Every stored image is preceded by a 12-byte
