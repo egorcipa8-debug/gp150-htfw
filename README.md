@@ -154,21 +154,18 @@ no network access of any kind.
   descriptor table; every 32 KB of the payload was rendered as a bitmap and
   looked at, and the structural searches came back empty. So the menus cannot be
   re-typefaced yet, and this tab does the thing that is possible instead.
-- **Screen** — the composition editor. A 320x240 canvas at 2x with every indexed
-  image as a palette: click one to put it on the canvas, drag it about, select it
-  and replace it, write text into it, or recolour it. **The pedal's own layout is
-  not in the firmware** — where each widget sits is decided by application code
-  that lives in SDRAM and is not mapped in the file, and no table of screen
-  rectangles exists anywhere in the payload (checked at three strides, longest
-  run of plausible quadruples: four). So the canvas is where *you* arrange things
-  in order to work on them; what it writes back is the artwork itself, in its own
-  slot, at its own size. Layouts are saved in `studio/screens.json`.
-- **Recolour** — theming that keeps the drawing. Hue turns the colour wheel,
-  saturation and lightness scale, and *tint* pulls everything towards one colour;
-  applied to the selection, to everything on the canvas, or to every asset in the
-  firmware. It is a 65536-entry lookup table over RGB565, so a whole-firmware
-  recolour is instant. This is the tool for "make the interface blue" — a texture
-  paints a picture over the artwork, this moves the artwork's own colours.
+- **Recolour** — theming that keeps the drawing, in the Graphics tab. Hue turns
+  the colour wheel, saturation and lightness scale, and *tint* pulls everything
+  towards one colour, across every indexed asset at once. It is a 65536-entry
+  lookup table over RGB565, so a whole-firmware recolour is instant, and the
+  descriptor guard skips anything a write would run over. This is the tool for
+  "make the interface blue" — a texture paints a picture over the artwork, this
+  moves the artwork's own colours.
+- **Оптимизировать намы** — an A2 capture at a width the pedal can afford. Shows
+  what each channel count would cost, measures what the three-channel submodel
+  Suite ships actually loses against the eight-channel one, distils a four- or
+  five-channel student in the background with a live log, and converts the
+  result through the vendor's own library. `FINDINGS.md` §29 has the numbers.
 - **Text** — the string tables, recovered as *chains*: NUL-terminated printable runs
   packed one after another with only a few bytes of padding between them. That shape
   is what a table looks like and an isolated printable run inside code never has it,

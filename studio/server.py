@@ -1343,14 +1343,35 @@ class Handler(BaseHTTPRequestHandler):
                 span = min(span, len(PROJECT.body) - off - 1024)
                 w = PROJECT.alpha_width(off, max(span, 24576))
                 return self._json({'off': off, 'width': w})
-            if u.path == '/api/screens':
-                f = os.path.join(HERE, 'screens.json')
-                if os.path.isfile(f):
-                    return self._send(200, open(f, 'rb').read())
-                return self._json({'screens': []})
             if u.path == '/api/fonts':
                 return self._json({'items': fonts_available(),
                                    'dir': FONT_DIR})
+            if u.path == '/api/fontsample':
+                # Deliberately independent of the loaded firmware and of any
+                # chosen slot: picking a font has to show something at once,
+                # or the tab looks dead - which is exactly how it looked.
+                from PIL import ImageDraw
+                text = q.get('text', ['GP-150'])[0] or ' '
+                size = int(q.get('size', ['0'])[0]) or 34
+                w, h = 460, int(size * 1.9) + 16
+                im = Image.new('RGB', (w, h), (17, 19, 24))
+                dr = ImageDraw.Draw(im)
+                fp = q.get('font', [None])[0] or None
+                try:
+                    f = Project._font(fp, size, text, w, h)
+                except Exception as e:                        # noqa: BLE001
+                    dr.text((8, 8), 'this file did not open as a font: %s' % e,
+                            fill=(220, 90, 90))
+                    f = None
+                if f is not None:
+                    ol = int(q.get('outline', ['0'])[0])
+                    dr.text((w // 2, h // 2), text, font=f, anchor='mm',
+                            fill=_rgb(q.get('color', ['#ffffff'])[0]),
+                            stroke_width=ol,
+                            stroke_fill=_rgb(q.get('ocolor', ['#000000'])[0]))
+                buf = io.BytesIO()
+                im.save(buf, 'PNG')
+                return self._send(200, buf.getvalue(), 'image/png')
             if u.path == '/api/textpreview':
                 off = int(q['off'][0], 0)
                 w = int(q['w'][0]); h = int(q['h'][0])
@@ -1543,11 +1564,6 @@ class Handler(BaseHTTPRequestHandler):
                 ImageFont.truetype(path, 16)
                 return self._json({'ok': True, 'path': path, 'name': name,
                                    'fonts': fonts_available()})
-            if u.path == '/api/screens':
-                f = os.path.join(HERE, 'screens.json')
-                open(f, 'w', encoding='utf-8').write(json.dumps(data, indent=1))
-                return self._json({'ok': True, 'path': f,
-                                   'screens': len(data.get('screens', []))})
             if u.path == '/api/recolor':
                 scope = data.get('regions')
                 res = PROJECT.recolour(
