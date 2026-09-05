@@ -1550,6 +1550,34 @@ class Handler(BaseHTTPRequestHandler):
                     outline_color=_rgb(data.get('ocolor', '#000000')),
                     dy=int(data.get('dy', 0)))
                 return self._json({'ok': True, 'edits': PROJECT.edits})
+            if u.path == '/api/text_batch':
+                # One font, many slots. Each slot keeps its own words, because
+                # a caption that fits an 80x24 button does not fit a 320x240
+                # splash - so this is a list, not one string sprayed everywhere
+                # unless the page chose to fill it that way.
+                shared = dict(
+                    font_path=data.get('font') or None,
+                    size=int(data.get('size', 0)),
+                    color=_rgb(data.get('color', '#ffffff')),
+                    align=data.get('align', 'center'),
+                    over=bool(data.get('over', True)),
+                    keep_alpha=bool(data.get('keep_alpha', False)),
+                    outline=int(data.get('outline', 0)),
+                    outline_color=_rgb(data.get('ocolor', '#000000')),
+                    dy=int(data.get('dy', 0)))
+                done, failed = 0, []
+                for s in data.get('slots', []):
+                    txt = (s.get('text') or '').strip()
+                    if not txt:
+                        continue
+                    try:
+                        PROJECT.draw_text(int(s['off']), int(s['w']), int(s['h']),
+                                          txt, **shared)
+                        done += 1
+                    except Exception as e:                    # noqa: BLE001
+                        failed.append({'off': int(s['off']), 'why': str(e)})
+                return self._json({'ok': True, 'written': done,
+                                   'failed': failed, 'edits': PROJECT.edits})
             if u.path == '/api/font_upload':
                 name = os.path.basename(data['name']).replace('..', '')
                 if not name.lower().endswith(('.ttf', '.otf')):

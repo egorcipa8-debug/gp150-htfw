@@ -241,17 +241,44 @@ dialog::backdrop{background:#0009}
   <!-- ---------------- NAM ---------------- -->
   <section id="nam" hidden>
     <div class="card">
+      <div class="hint" style="font-size:13px;line-height:1.5">
+        <b>Что это вообще такое.</b> Файл <code>.nam</code> — это «слепок» усилителя:
+        маленькая нейросеть, которую обучили звучать как конкретный аппарат.
+        Педаль умеет их играть, но её процессор один на всё — на усилитель,
+        задержку, ревер, экран и USB сразу.<br><br>
+
+        <b>В чём проблема.</b> Современная капча (формат A2) внутри содержит
+        <i>две</i> обученные версии одного и того же усилителя: маленькую и большую.
+        Большая точнее, но её одной хватит, чтобы занять 94% процессора — тогда на
+        остальную цепочку не остаётся ничего. Поэтому Valeton Suite всегда молча
+        берёт маленькую. На чистых звуках разницы почти нет, а вот на перегрузе
+        она слышна.<br><br>
+
+        <b>Что делает эта вкладка.</b> Между «маленькая» и «большая» ничего не
+        мешает сделать <i>среднюю</i>. Педаль читает размер модели из самого файла —
+        он там записан, а не зашит в прошивку. Значит можно взять большую модель
+        как образец и обучить среднюю повторять её звук: точнее маленькой, но по
+        карману процессору.<br><br>
+
+        <b>Порядок действий:</b> выбрать файл → <b>Разобрать</b> → посмотреть, сколько
+        теряет стоковый вариант → <b>Обучить</b> → <b>Сделать .namb</b>.
+      </div>
+    </div>
+
+    <div class="card">
       <div class="row">
+        <b class="meta">1. Капча</b>
         <input id="nmpath" placeholder="…\capture.nam" style="flex:1;min-width:340px">
         <button onclick="namBrowse()">Обзор…</button>
         <button class="primary" onclick="namLook()">Разобрать</button>
       </div>
       <div class="hint">
-        Капча A2 приезжает контейнером с двумя обученными подмоделями — на 3 канала
-        и на 8. Suite всегда берёт трёхканальную, потому что восьмиканальная стоит
-        94% процессора и не влезает. Но ширина не зашита в педаль: <code>.namb</code>
-        описывает её сам, двумя байтами. Значит модель можно обучить на 4 или 5
-        каналов — уже слышно лучше, ещё по карману.
+        <b>Каналы</b> — это ширина сети, то есть сколько подробностей она способна
+        удержать. Больше каналов — точнее звук и дороже счёт. Колонка <b>M7</b> —
+        сколько процента процессора съест только усилитель; всё, что выше примерно
+        60%, педаль не потянет вместе с остальной цепочкой. Для сравнения: GP-200
+        на свой штатный амп-движок тратит около 22%, так что <b>4 канала — ровно
+        та же цена</b>, к которой железо и так привыкло.
       </div>
       <div id="nmfiles" class="hint" style="display:none"></div>
       <div id="nmabout" class="hint"></div>
@@ -270,15 +297,27 @@ dialog::backdrop{background:#0009}
 
     <div class="card">
       <div class="row">
-        <button onclick="namEsr()">Измерить, что теряет Suite</button>
-        <span class="meta">прогоняет обе подмодели по вендорскому DI и считает ESR
-          с выравниванием уровня</span>
+        <b class="meta">2. Что теряется</b>
+        <button onclick="namEsr()">Измерить</button>
+        <span class="meta">займёт несколько секунд</span>
       </div>
       <div id="nmesr" class="hint"></div>
+      <div class="hint">
+        Через обе модели пропускается один и тот же кусок чистой гитары (тот самый
+        файл, которым пользуется вендорский конвертер), после чего громкость
+        выравнивается и считается, насколько отличается форма звука. Это число и
+        есть <b>ESR</b>. Чем меньше, тем ближе к большой модели.<br>
+        Ориентир: <b>ниже 0.005</b> (−23 dB и лучше) — на гитаре не отличить;
+        <b>около 0.01</b> — разница есть, но её надо искать; <b>0.02 и выше</b>
+        (−17 dB и хуже) — слышно сразу, обычно на перегрузе. Чистые капчи почти
+        всегда попадают в первую категорию, и тогда обучать нечего — стоковой
+        вполне достаточно.
+      </div>
     </div>
 
     <div class="card">
       <div class="row">
+        <b class="meta">3. Обучение</b>
         <label>Каналов
           <select id="nmch" style="width:70px">
             <option value="4" selected>4</option>
@@ -292,10 +331,18 @@ dialog::backdrop{background:#0009}
         <span class="meta" id="nmstate"></span>
       </div>
       <div class="hint">
-        Учитель — восьмиканальная подмодель, ученик стартует из трёхканальной:
-        расширение сделано так, что выход в этот момент побайтово тот же, поэтому
-        хуже, чем ставит Suite, не станет. Дальше Adam по случайным окнам DI.
-        Остановить можно в любой момент — сохраняется лучший результат, а не последний.
+        Большая модель играет роль <b>учителя</b>: её пропускают через гитарный
+        сигнал и запоминают, что должно получиться. Средняя модель — <b>ученик</b> —
+        начинает ровно с того, что ставит Suite (в этот момент она звучит с ним
+        байт в байт), и постепенно подгоняется под учителя.<br><br>
+        <b>Каналов</b> — какого размера делать ученика; 4 — безопасный выбор.
+        <b>Минут</b> — сколько крутить: основное падение ошибки происходит в первые
+        пару минут, дальше идёт медленное дошлифовывание.
+        <b>Секунд DI</b> — сколько гитары брать для обучения; больше — разнообразнее
+        материал, но каждый шаг считается дольше.<br><br>
+        Останавливать можно в любой момент: сохраняется <b>лучший</b> результат за
+        весь прогон, а не последний. Хуже стокового не станет ни при каком раскладе —
+        ученик с него начинает.
       </div>
       <pre id="nmlog" style="max-height:300px;overflow:auto;background:#111318;
            padding:10px;border-radius:6px;font-size:12px;line-height:1.35"></pre>
@@ -303,13 +350,22 @@ dialog::backdrop{background:#0009}
 
     <div class="card">
       <div class="row">
+        <b class="meta">4. Результат</b>
         <input id="nmout" placeholder="обученный .nam" style="flex:1;min-width:340px">
         <button class="primary" onclick="namConvert()">Сделать .namb</button>
         <button onclick="namCheck()">Сверить с учителем</button>
       </div>
       <div class="hint">
-        Конвертирует вендорская <code>5868USB.dll</code> — та же, что работает в Suite,
-        так что контрольную сумму и заголовок считает она сама.
+        <b>Как залить в педаль.</b> Обученный <code>.nam</code> (поле выше) грузится в
+        Valeton Suite так же, как любая другая капча — Suite сам его сконвертирует и
+        отправит, и размер при этом останется тот, который мы обучили: он записан
+        внутри файла. Кнопка <b>Сделать .namb</b> нужна для проверки — она прогоняет
+        файл через ту же вендорскую библиотеку <code>5868USB.dll</code>, которой
+        пользуется Suite, и показывает, что получилось: размер, число весов,
+        контрольную сумму. Если тут всё в порядке, Suite тоже проглотит.<br>
+        <b>Честная оговорка:</b> цена в процентах посчитана арифметикой, а не
+        замерена на живой педали. Если после загрузки появится предупреждение о
+        перегрузке — возьми 4 канала вместо 5, или разгрузи остальную цепочку.
       </div>
       <div id="nmconv" class="hint"></div>
     </div>
@@ -381,6 +437,32 @@ dialog::backdrop{background:#0009}
         <code>studio/fonts</code>; the installed ones are opened where they lie.
       </div>
       <div id="fprev" class="grid"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <b class="meta">Сразу во все слоты</b>
+        <button onclick="batchLoad()">Показать слоты</button>
+        <input id="bfilter" placeholder="фильтр по размеру, напр. 80x102" style="width:190px" oninput="batchDraw()">
+        <label class="meta"><input type="checkbox" id="bdoubt" onchange="batchDraw()"> и сомнительные</label>
+        <span id="bcount" class="meta"></span>
+      </div>
+      <div class="row">
+        <input id="ball" placeholder="один текст на все отмеченные" style="width:240px">
+        <button onclick="batchFill()">Разложить по всем</button>
+        <button onclick="batchNumber()">Пронумеровать 1, 2, 3…</button>
+        <button onclick="batchCheck(true)">Отметить все</button>
+        <button onclick="batchCheck(false)">Снять все</button>
+        <div class="spacer"></div>
+        <button class="primary" onclick="batchApply()">Вписать во все отмеченные</button>
+      </div>
+      <div class="hint">
+        Шрифт, размер, цвет, обводка и выравнивание берутся сверху — те же, что в
+        образце. Текст у каждого слота свой: подпись, которая влезает в кнопку
+        80&times;24, не влезет в заставку 320&times;240. Пустая строка — слот не трогаем.
+        Слоты с пустым текстом пропускаются, даже если отмечены.
+      </div>
+      <div id="blist" style="max-height:420px;overflow:auto"></div>
       <div class="hint">
         The pedal's <b>own</b> UI font is not in this file &mdash; not as 1-bit glyphs, not
         as an anti-aliased sheet, not behind a glyph-descriptor table. Every 32 KB of the
@@ -1164,6 +1246,74 @@ async function applyText(){
     log(`✓ "${p.text}" written into 0x${p.off.toString(16).toUpperCase()}`,'g');
     await refreshEdits(); fontPreview();
   }catch(_){ log('could not write that','r') }
+}
+
+/* ---- one font, every slot -------------------------------------------------
+   The single-slot form above writes one caption. This writes many in one go:
+   the same face and colour everywhere, a text of its own per slot, because a
+   word that fits a button does not fit a splash screen. */
+
+let BSLOTS=[];
+
+async function batchLoad(){
+  let d;
+  try{ d=await api('/api/curated'); }
+  catch(_){ log('сначала открой прошивку','r'); return }
+  if(!d.items.length){ log('в этом файле нет дескрипторов картинок','r'); return }
+  BSLOTS=d.items.map(ic=>({off:ic.off,w:ic.w,h:ic.h,grade:ic.grade,on:false,text:''}));
+  batchDraw();
+}
+
+function batchRows(){
+  const f=$('#bfilter').value.trim().toLowerCase();
+  const doubt=$('#bdoubt').checked;
+  return BSLOTS.filter(s=>(doubt||!s.grade||s.grade==='art') &&
+    (!f || (s.w+'x'+s.h).includes(f) || s.off.toString(16).toLowerCase().includes(f)));
+}
+
+function batchDraw(){
+  const rows=batchRows(), g=$('#blist'), z=1;
+  $('#bcount').textContent=`${rows.length} слотов, отмечено ${rows.filter(s=>s.on).length}`;
+  g.innerHTML=rows.map(s=>{
+    const i=BSLOTS.indexOf(s);
+    return `<div class="row" style="gap:8px;align-items:center;padding:2px 0">
+      <input type="checkbox" ${s.on?'checked':''} onchange="BSLOTS[${i}].on=this.checked;batchCount()">
+      <img src="/api/image?off=${s.off}&w=${s.w}&h=${s.h}&scale=1&t=${Date.now()}"
+           width="${Math.min(s.w,64)}" style="background:#0b0d11;border-radius:3px">
+      <span class="meta" style="width:110px">${s.w}&times;${s.h}${s.grade&&s.grade!=='art'?' · '+s.grade:''}</span>
+      <span class="meta" style="width:90px">0x${s.off.toString(16).toUpperCase()}</span>
+      <input value="${(s.text||'').replace(/"/g,'&quot;')}" placeholder="текст для этого слота"
+             style="flex:1;min-width:140px"
+             oninput="BSLOTS[${i}].text=this.value; if(this.value&&!BSLOTS[${i}].on){BSLOTS[${i}].on=true;this.parentNode.firstElementChild.checked=true;batchCount()}">
+    </div>`}).join('');
+}
+
+function batchCount(){
+  $('#bcount').textContent=`${batchRows().length} слотов, отмечено ${batchRows().filter(s=>s.on).length}`;
+}
+
+function batchCheck(on){ batchRows().forEach(s=>s.on=on); batchDraw(); }
+function batchFill(){ const t=$('#ball').value; batchRows().forEach(s=>{s.text=t; s.on=!!t}); batchDraw(); }
+function batchNumber(){ let n=1; batchRows().forEach(s=>{s.text=String(n++); s.on=true}); batchDraw(); }
+
+async function batchApply(){
+  const p=textParams();
+  const slots=batchRows().filter(s=>s.on&&s.text.trim())
+                         .map(s=>({off:s.off,w:s.w,h:s.h,text:s.text}));
+  if(!slots.length){ log('нечего писать: отметь слоты и впиши текст','r'); return }
+  if(!confirm(`Вписать надписи в ${slots.length} слот(ов) шрифтом «${
+      ($('#fontsel').selectedOptions[0]||{}).textContent||'по умолчанию'}»?`)) return;
+  try{
+    const d=await api('/api/text_batch',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({slots, font:p.font, size:p.size, color:p.color,
+        align:p.align, over:p.over, outline:p.outline, ocolor:p.ocolor, dy:p.dy,
+        keep_alpha:$('#fkeep').checked})});
+    slots.forEach(s=>DIRTY.add(s.off));
+    log(`✓ вписал в ${d.written} слот(ов)`+
+        (d.failed.length?`, ${d.failed.length} не вышло: ${d.failed[0].why}`:''),
+        d.failed.length?'r':'g');
+    await refreshEdits(); batchDraw();
+  }catch(_){ log('пакетная запись не удалась','r') }
 }
 
 function drawFont(){

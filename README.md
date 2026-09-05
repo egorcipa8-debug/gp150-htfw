@@ -153,7 +153,13 @@ no network access of any kind.
   not as 1-bit glyphs, not as an anti-aliased sheet, not behind a glyph
   descriptor table; every 32 KB of the payload was rendered as a bitmap and
   looked at, and the structural searches came back empty. So the menus cannot be
-  re-typefaced yet, and this tab does the thing that is possible instead.
+  re-typefaced yet, and this tab does the thing that is possible instead. A
+  **sample strip** renders the chosen face on its own, with no firmware and no
+  slot needed, so picking a font shows something at once. Below the single-slot
+  form is **one font, every slot**: the whole index listed with a caption box
+  each, filled one at a time, all at once, or numbered, and written in one pass -
+  the face and colour are shared, the words are not, because a caption that fits
+  an 80x24 button does not fit a 320x240 splash.
 - **Recolour** — theming that keeps the drawing, in the Graphics tab. Hue turns
   the colour wheel, saturation and lightness scale, and *tint* pulls everything
   towards one colour, across every indexed asset at once. It is a 65536-entry
