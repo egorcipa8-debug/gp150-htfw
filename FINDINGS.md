@@ -1373,3 +1373,92 @@ the SWD header, as the GP-200 work did, or a read command in the resident
 updater if ours has one - the GP-200's is `0x01`, and ours is a different
 variant whose command set can be read out of the vendor library without going
 near the device.
+
+## 31. The screen registry is in the file, and its pointers are editable
+
+Everything in §23, §28 and §30 was found by measuring bytes. Ghidra had only
+ever been pointed at the Windows library, not at the firmware, and that was a
+mistake: the first real pass over the flat image turned up the thing all of
+those sections had been circling.
+
+**How it was found.** Import the flat image `flat_image.py` writes at
+`0x60038000`, add the chip's RAM windows, disassemble Thumb, then ask a question
+a byte-grep cannot: *what references this range*. Two new scripts do that -
+`Refs.java` for an address, `RangeRefs.java` for a range - and the answers were
+immediately worth having:
+
+| range | what it is | references |
+|-------|-----------|-----------|
+| `0x602C8000-0x602C9000` | the menu strings | **0** |
+| `0x6006C000-0x6006D000` | parameter names | 44 |
+| `0x80000000-0x80030000` | the SDRAM module | 182 |
+| `0x6003AB00-0x6003B000` | the veneer table | 160 |
+
+Zero references to the menu strings confirms what §30 assumed: they are reached
+by index through a table, never by address, which is why no search for a
+reference to one ever found anything.
+
+**The registry.** `FUN_6004fec8`, an init routine, calls `FUN_600628b8` fifteen
+times:
+
+```c
+void FUN_600628b8(uint id, void *a, void *b, void *c) {
+  if (0x1f < id) return;                       /* 32 slots */
+  int e = DAT_600628dc + id * 0xc;             /* 12 bytes each */
+  *(void **)(e)     = a;
+  *(void **)(e + 4) = b;
+  *(void **)(e + 8) = c;
+}
+```
+
+A **32-slot table of three function pointers each**, filled with ids `0x00`,
+`0x01`, `0x02`, `0x03`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, `0x0A`, `0x0B`,
+`0x0C`, `0x0E`, `0x0F`, `0x12` - fifteen screens, with gaps at `0x07`, `0x0D`,
+`0x10`, `0x11`. The GP-200 registers twenty screens with gaps in the same style,
+`0x00`-`0x14`, and there `0x08` is a registered-but-blank slot; ours has the same
+shape, and the same trick would name them: patch the boot to enter screen *N*,
+reflash, photograph the display.
+
+**And every one of those pointers is in the update file.** They are literals in
+section b, at payload `0x018064` through `0x0180E4`:
+
+| id | handlers (SDRAM) |
+|----|------------------|
+| `0x00` | `0x8000ED41` `0x8000EDD5` `0x8000EE4B` |
+| `0x01` | `0x8000C50D` `0x8000D871` `0x8000E1E9` |
+| `0x02` | `0x8000231D` `0x80003381` `0x80004261` |
+| `0x03` | `0x8000EE65` `0x8000F381` `0x8000F911` |
+| `0x04` | `0x800054E5` `0x80005BA9` `0x800064DD` |
+| `0x05` | `0x80003C05` `0x80003F21` `0x80003FC5` |
+| `0x06` | `0x80006CC9` `0x80007065` `0x80009FB5` |
+| `0x08` | `0x80010B21` `0x80011195` `0x80011D11` |
+| `0x09` | `0x80001C0D` `0x80001C61` `0x80001FCD` |
+| `0x0A` | `0x80014C75` `0x80015475` `0x80015A35` |
+| `0x0B` | `0x8000AC8D` `0x8000B1C5` `0x8000BE65` |
+| `0x0C` | `0x80007071` `0x80007B3D` `0x80007FCD` |
+| `0x0E` | `0x80004E3D` `0x80005239` `0x80005389` |
+| `0x0F` | `0x8000FC21` `0x80010751` `0x80010899` |
+| `0x12` | `0x80011F71` `0x80013E2D` `0x80014885` |
+
+This is the first handle on the native interface that does not need a debug
+probe. The code being pointed at is out of reach, but **the pointers are not**:
+they are four bytes each in a file we can already rebuild and flash. Point one
+at code of our own, placed in flash where nothing else uses it, and that screen
+runs our code instead - which is how the GP-200 project's tuner mod works, one
+retargeted call into a code cave.
+
+**Two blocks are copied at boot, not one.** The same literal pool holds ITCM
+pointers - `0x00014F65`, `0x0002093D`, `0x00020CCD`, `0x00022D53`, `0x00022DAD`,
+`0x00029BE5`, `0x00029F1D`, and a data pointer `0x000302BC` - alongside the SDRAM
+ones. So the GP-150 does exactly what the GP-200 does: one block into ITCM, one
+into SDRAM. Neither is in the image, and together they are larger than the
+229,376 bytes below `0x38000` that §28 proposed as their home.
+
+Which puts **section g** back in the frame: 647,036 bytes, destination field
+`0x00000000` - which is the ITCM base - transmitted during an update, entropy
+7.996 bits per byte, no 16- or 32-byte block ever repeating (so not ECB), not
+LZO, and not zlib, raw deflate, gzip, LZMA or bzip2 at any offset in the first
+64 bytes. Big enough to hold both modules. If g is the ITCM+SDRAM image under a
+stream cipher or an unidentified packer, then the interface *is* in the update
+file after all, and §28's conclusion needs replacing rather than extending.
+That is the thread to pull next, and it is pure offline work.
