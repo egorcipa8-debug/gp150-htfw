@@ -57,6 +57,28 @@ SUITE_ASSETS = [
 FONT_DIR = os.path.join(HERE, 'fonts')
 
 
+CAPTIONS = os.path.join(HERE, 'captions.json')
+
+
+def read_captions():
+    """What each tile's word says, once somebody has told us.
+
+    The words are pictures, so nothing in the file spells them out; typing
+    them in is a one-time job, and keeping them here is what turns "change the
+    font of every label" into one click on the second run."""
+    try:
+        with open(CAPTIONS, 'r', encoding='utf-8') as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:                                         # noqa: BLE001
+        return {}
+
+
+def write_captions(d):
+    with open(CAPTIONS, 'w', encoding='utf-8') as fh:
+        json.dump(d, fh, ensure_ascii=False, indent=1, sort_keys=True)
+
+
 def fonts_available():
     """Fonts to draw with: whatever has been uploaded into studio/fonts, then
     what Windows already has. Nothing is copied out of the system directory -
@@ -791,6 +813,180 @@ class Project(object):
         order = {'art': 0, 'unsure': 1, 'junk': 2}
         return sorted(self.images, key=lambda d: (order.get(d['grade'], 3), d['off']))
 
+    def label_score(self, off, w, h):
+        """Is this tile lettering, or is it a picture?
+
+        Lettering has a particular shape as data: most of the tile is empty,
+        what is drawn is one colour plus the grey of its own antialiasing, and
+        the ink does not reach the edges the way a photograph or a gradient
+        does. A picture fails all three. This is what lets the Font tab list
+        the captions on their own instead of all sixty-odd assets.
+        """
+        try:
+            im = decode_image(self.body, off, w, h).convert('RGBA')
+        except Exception:                                     # noqa: BLE001
+            return {'text_like': False, 'ink': 0.0, 'colours': 0}
+        px = im.load()
+        ink = 0
+        hues = {}
+        edge = 0
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = px[x, y]
+                if a < 128:
+                    continue
+                ink += 1
+                if x == 0 or y == 0 or x == w - 1 or y == h - 1:
+                    edge += 1
+                mx, mn = max(r, g, b), min(r, g, b)
+                # grey is antialiasing, not a colour of its own
+                key = 'grey' if mx - mn < 24 else (r >> 5, g >> 5, b >> 5)
+                hues[key] = hues.get(key, 0) + 1
+        n = float(w * h) or 1.0
+        cover = ink / n
+        colours = len([k for k, v in hues.items() if v > max(4, ink * 0.01)])
+        border = edge / float(2 * (w + h)) if w and h else 1.0
+        text_like = (0.02 <= cover <= 0.55 and colours <= 3 and border < 0.35)
+        return {'text_like': bool(text_like), 'ink': round(cover, 3),
+                'colours': colours, 'border': round(border, 3)}
+
+    # ---- the lettering that is already in the artwork ------------------
+    #
+    # The block tiles - AMP, CAB, DLY, DST, EQ, MOD, NR, PRE, RVB, VOL, WAH,
+    # NAM - are pictures of a pedal with a word printed on it. The word is
+    # part of the picture, so re-typefacing the interface means finding that
+    # word inside the tile, wiping it, and printing it again in another face.
+    # Which is what these two do.
+
+    @staticmethod
+    def _lum(r, g, b):
+        return 0.299 * r + 0.587 * g + 0.114 * b
+
+    def word_box(self, off, w, h, im=None, thr=34):
+        """Where the word sits inside a tile, or None if there is no word.
+
+        Letters are separate blobs, so this finds every blob of ink that
+        contrasts with the tile's body colour, then keeps the group of blobs
+        that share a baseline - which is what a word is. Blobs that are too
+        tall, too wide or too high up the tile are the pedal's own knobs and
+        plate, and are dropped before the grouping.
+        """
+        from collections import Counter, deque
+        if im is None:
+            try:
+                im = decode_image(self.body, off, w, h).convert('RGBA')
+            except Exception:                                 # noqa: BLE001
+                return None
+        px = im.load()
+        c = Counter()
+        for y in range(h):
+            for x in range(w):
+                if px[x, y][3] > 200:
+                    c[px[x, y][:3]] += 1
+        if not c:
+            return None
+        bl = self._lum(*c.most_common(1)[0][0])
+        ink = [[(px[x, y][3] > 150 and abs(self._lum(*px[x, y][:3]) - bl) > thr)
+                for x in range(w)] for y in range(h)]
+        seen = [[False] * w for _ in range(h)]
+        comps = []
+        for y in range(h):
+            for x in range(w):
+                if not ink[y][x] or seen[y][x]:
+                    continue
+                q = deque([(x, y)])
+                seen[y][x] = True
+                pts = []
+                while q:
+                    cx, cy = q.popleft()
+                    pts.append((cx, cy))
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                                   (1, 1), (-1, -1), (1, -1), (-1, 1)):
+                        nx, ny = cx + dx, cy + dy
+                        if 0 <= nx < w and 0 <= ny < h and ink[ny][nx] \
+                                and not seen[ny][nx]:
+                            seen[ny][nx] = True
+                            q.append((nx, ny))
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                comps.append((min(xs), min(ys), max(xs) + 1, max(ys) + 1, len(pts)))
+        g = [c0 for c0 in comps
+             if 1 <= c0[2] - c0[0] <= w * 0.55 and 3 <= c0[3] - c0[1] <= h * 0.35
+             and c0[4] >= 3 and c0[1] >= h * 0.35]
+        if len(g) < 2:
+            return None
+        best = None
+        for seed in g:
+            hs = seed[3] - seed[1]
+            line = [c0 for c0 in g
+                    if min(c0[3], seed[3]) - max(c0[1], seed[1])
+                    >= 0.6 * min(c0[3] - c0[1], hs)
+                    and 0.55 * hs <= c0[3] - c0[1] <= 1.8 * hs]
+            if len(line) < 2:
+                continue
+            box = (min(c0[0] for c0 in line), min(c0[1] for c0 in line),
+                   max(c0[2] for c0 in line), max(c0[3] for c0 in line))
+            sc = (len(line), box[2] - box[0], box[1])
+            if best is None or sc > best[0]:
+                best = (sc, box)
+        if best is None or best[1][2] - best[1][0] < 8:
+            return None
+        return list(best[1])
+
+    def retypeset(self, off, w, h, text, box=None, font_path=None, color=None,
+                  pad=1, preview=False, dy=0, grow=0):
+        """Print a word again, in another face, where the old one was.
+
+        The ink colour and the colour behind it are read off the tile itself,
+        so a grey tile stays grey and a coloured one keeps its own colour -
+        this is a change of typeface, not of palette. The new word is fitted
+        into the old word's box, so it takes the same room on the screen.
+        """
+        from PIL import ImageDraw, ImageFont
+        im = decode_image(self.body, off, w, h).convert('RGBA')
+        if box is None:
+            box = self.word_box(off, w, h, im)
+        if box is None:
+            raise ValueError("no lettering found in the image at 0x%X" % off)
+        x0, y0, x1, y1 = [int(v) for v in box]
+        px = im.load()
+        # what is behind the word: the commonest opaque colour in the ring
+        # around its box, which is the tile's own body
+        from collections import Counter
+        ring = Counter()
+        for y in range(max(0, y0 - 2), min(h, y1 + 2)):
+            for x in range(max(0, x0 - 3), min(w, x1 + 3)):
+                if x0 <= x < x1 and y0 <= y < y1:
+                    continue
+                p = px[x, y]
+                if p[3] > 200:
+                    ring[p] += 1
+        if not ring:
+            raise ValueError("nothing to read the background from at 0x%X" % off)
+        back = ring.most_common(1)[0][0]
+        bl = self._lum(*back[:3])
+        # and the word's own colour: the mean of the pixels that are not it
+        acc, n = [0, 0, 0], 0
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                p = px[x, y]
+                if p[3] > 150 and abs(self._lum(*p[:3]) - bl) > 34:
+                    acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2]; n += 1
+        ink = color or (tuple(v // n for v in acc) if n else (255, 255, 255))
+        # wipe, keeping each pixel's own alpha so nothing punches a hole
+        for y in range(max(0, y0 - pad), min(h, y1 + pad)):
+            for x in range(max(0, x0 - pad), min(w, x1 + pad)):
+                px[x, y] = (back[0], back[1], back[2], px[x, y][3])
+        bw, bh = (x1 - x0) + 2 * grow, (y1 - y0) + 2 * grow
+        dr = ImageDraw.Draw(im)
+        f = self._font(font_path, 0, text, max(bw, 4), max(bh, 4))
+        dr.text(((x0 + x1) // 2, (y0 + y1) // 2 + dy), text, font=f,
+                anchor='mm', fill=tuple(ink))
+        if preview:
+            return im
+        self.put_image(off, w, h, im, True)
+        return {'box': [x0, y0, x1, y1], 'ink': list(ink), 'back': list(back[:3])}
+
     def detect_icons(self, off, end, w, min_h=6, gap=1):
         """Split a graphics region into individual images.
 
@@ -1343,6 +1539,43 @@ class Handler(BaseHTTPRequestHandler):
                 span = min(span, len(PROJECT.body) - off - 1024)
                 w = PROJECT.alpha_width(off, max(span, 24576))
                 return self._json({'off': off, 'width': w})
+            if u.path == '/api/labels':
+                # Every indexed tile that has a word printed on it, with the
+                # word's box and whatever caption has been typed for it before.
+                caps = read_captions()
+                out = []
+                for d in PROJECT.curated():
+                    if d.get('grade') not in (None, 'art'):
+                        continue
+                    box = PROJECT.word_box(d['off'], d['w'], d['h'])
+                    if not box:
+                        continue
+                    out.append({'off': d['off'], 'w': d['w'], 'h': d['h'],
+                                'box': box,
+                                'text': caps.get('0x%X' % d['off'], '')})
+                return self._json({'ok': True, 'items': out})
+            if u.path == '/api/captions':
+                return self._json({'ok': True, 'captions': read_captions()})
+            if u.path == '/api/labelpreview':
+                off = int(q['off'][0], 0)
+                w, h = int(q['w'][0]), int(q['h'][0])
+                text = q.get('text', [''])[0]
+                scale = int(q.get('scale', ['2'])[0])
+                if text:
+                    im = PROJECT.retypeset(
+                        off, w, h, text,
+                        font_path=q.get('font', [None])[0] or None,
+                        pad=int(q.get('pad', ['2'])[0]),
+                        dy=int(q.get('dy', ['0'])[0]), preview=True)
+                else:
+                    im = decode_image(PROJECT.body, off, w, h).convert('RGBA')
+                bg = Image.new('RGB', (w, h), (17, 19, 24))
+                bg.paste(im, (0, 0), im)
+                if scale > 1:
+                    bg = bg.resize((w * scale, h * scale), Image.NEAREST)
+                buf = io.BytesIO()
+                bg.save(buf, 'PNG')
+                return self._send(200, buf.getvalue(), 'image/png')
             if u.path == '/api/fonts':
                 return self._json({'items': fonts_available(),
                                    'dir': FONT_DIR})
@@ -1550,6 +1783,34 @@ class Handler(BaseHTTPRequestHandler):
                     outline_color=_rgb(data.get('ocolor', '#000000')),
                     dy=int(data.get('dy', 0)))
                 return self._json({'ok': True, 'edits': PROJECT.edits})
+            if u.path == '/api/retypeset':
+                # The whole point of the Font tab: change the face of every
+                # word already printed into the artwork, keeping each tile's
+                # own colours and the room the old word took.
+                font = data.get('font') or None
+                pad = int(data.get('pad', 2))
+                dy = int(data.get('dy', 0))
+                done, failed = 0, []
+                caps = read_captions()
+                for s0 in data.get('slots', []):
+                    txt = (s0.get('text') or '').strip()
+                    if not txt:
+                        continue
+                    caps['0x%X' % int(s0['off'])] = txt
+                    try:
+                        PROJECT.retypeset(int(s0['off']), int(s0['w']),
+                                          int(s0['h']), txt,
+                                          box=s0.get('box'), font_path=font,
+                                          pad=pad, dy=dy)
+                        done += 1
+                    except Exception as e:                    # noqa: BLE001
+                        failed.append({'off': int(s0['off']), 'why': str(e)})
+                write_captions(caps)
+                return self._json({'ok': True, 'written': done, 'failed': failed,
+                                   'edits': PROJECT.edits})
+            if u.path == '/api/captions':
+                write_captions(data.get('captions', {}))
+                return self._json({'ok': True})
             if u.path == '/api/text_batch':
                 # One font, many slots. Each slot keeps its own words, because
                 # a caption that fits an 80x24 button does not fit a 320x240

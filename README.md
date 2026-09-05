@@ -159,7 +159,16 @@ no network access of any kind.
   form is **one font, every slot**: the whole index listed with a caption box
   each, filled one at a time, all at once, or numbered, and written in one pass -
   the face and colour are shared, the words are not, because a caption that fits
-  an 80x24 button does not fit a 320x240 splash.
+  an 80x24 button does not fit a 320x240 splash. And above that, **change the
+  face of every label already in the firmware**: the block tiles (AMP, DLY, VOL
+  and the rest) have their word printed into the picture, so this finds the word
+  inside each tile - letters are separate blobs of ink, grouped by the baseline
+  they share - wipes it, and prints it again in another face, reading the ink
+  colour and the colour behind it off the tile so a grey tile stays grey and a
+  coloured one keeps its colour. 25 of the 43 artwork tiles in V1.1.1 have a word.
+  What the word *says* is not in the file - it is a picture - so it is typed once
+  and kept in `studio/captions.json`; after that a change of typeface is one
+  button.
 - **Recolour** — theming that keeps the drawing, in the Graphics tab. Hue turns
   the colour wheel, saturation and lightness scale, and *tint* pulls everything
   towards one colour, across every indexed asset at once. It is a 65536-entry

@@ -441,6 +441,31 @@ dialog::backdrop{background:#0009}
 
     <div class="card">
       <div class="row">
+        <b class="meta">Сменить шрифт у всех надписей</b>
+        <button class="primary" onclick="labelsLoad()">Найти надписи</button>
+        <label>Запас <input type="number" id="lpad" value="2" min="0" max="6" style="width:56px"
+               title="на сколько пикселей шире стирать старое слово" oninput="labelsDraw()"></label>
+        <label>Сдвиг y <input type="number" id="ldy" value="0" style="width:56px" oninput="labelsDraw()"></label>
+        <span id="lcount" class="meta"></span>
+        <div class="spacer"></div>
+        <button class="primary" onclick="labelsApply()">Перерисовать всё выбранным шрифтом</button>
+      </div>
+      <div class="hint">
+        Надписи вроде <b>AMP</b>, <b>DLY</b>, <b>VOL</b> — это часть картинки, а не текст,
+        который педаль рисует сама. Поэтому сменить у них шрифт значит: найти слово
+        внутри плашки, стереть его и напечатать заново другой гарнитурой. Цвет буквы и
+        цвет под ней читаются с самой плашки, так что серая останется серой, а цветная
+        своего цвета — меняется только начертание, не палитра.<br>
+        Слово ищется само, но <b>что именно там написано, файл не знает</b> — это
+        картинка. Один раз впиши подписи в поля, они сохранятся в
+        <code>studio/captions.json</code>, и дальше смена шрифта у всех надписей — одна
+        кнопка. Слева показано, как есть; справа — как станет.
+      </div>
+      <div id="llist" style="max-height:460px;overflow:auto"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
         <b class="meta">Сразу во все слоты</b>
         <button onclick="batchLoad()">Показать слоты</button>
         <input id="bfilter" placeholder="фильтр по размеру, напр. 80x102" style="width:190px" oninput="batchDraw()">
@@ -1219,6 +1244,7 @@ function fontPreview(){
   const sq=new URLSearchParams({font:p.font,text:p.text||' ',size:p.size||0,
     color:p.color,outline:p.outline,ocolor:p.ocolor,t:Date.now()});
   $('#fsample').innerHTML=`<img src="/api/fontsample?${sq}" style="max-width:100%;border-radius:6px">`;
+  if(typeof LABELS!=='undefined'&&LABELS.length)labelsDraw();
   if(!p.off||p.w<4||p.h<4){
     g.innerHTML='<div class="hint">Это образец шрифта. Чтобы вписать надпись в картинку прошивки, выбери слот — смещение, ширину и высоту — кнопкой «Взять из индекса».</div>';
     return;
@@ -1246,6 +1272,58 @@ async function applyText(){
     log(`✓ "${p.text}" written into 0x${p.off.toString(16).toUpperCase()}`,'g');
     await refreshEdits(); fontPreview();
   }catch(_){ log('could not write that','r') }
+}
+
+/* ---- the lettering already in the artwork ---------------------------------
+   AMP, DLY, VOL and the rest are printed into the tiles, so changing their
+   face means wiping the word and printing it again. The word is found for
+   you; what it says has to be typed once, and is remembered after that. */
+
+let LABELS=[];
+
+async function labelsLoad(){
+  let d;
+  try{ d=await api('/api/labels'); }
+  catch(_){ log('сначала открой прошивку','r'); return }
+  LABELS=d.items;
+  if(!LABELS.length){ log('надписей в картинках не нашлось','r'); return }
+  labelsDraw();
+  const empty=LABELS.filter(s=>!s.text).length;
+  log(`нашёл ${LABELS.length} надпис(ь/и), без подписи ${empty}`, empty?'':'g');
+}
+
+function labelsDraw(){
+  const g=$('#llist'), font=$('#fontsel').value, pad=+$('#lpad').value, dy=+$('#ldy').value;
+  $('#lcount').textContent=`${LABELS.length} надписей, подписано ${LABELS.filter(s=>s.text).length}`;
+  g.innerHTML=LABELS.map((s,i)=>{
+    const q=`off=${s.off}&w=${s.w}&h=${s.h}&scale=2&t=${Date.now()}`;
+    const after=s.text
+      ? `<img src="/api/labelpreview?${q}&text=${encodeURIComponent(s.text)}&font=${encodeURIComponent(font)}&pad=${pad}&dy=${dy}">`
+      : `<span class="meta">впиши подпись →</span>`;
+    return `<div class="row" style="gap:10px;align-items:center;padding:3px 0;border-bottom:1px solid #1c1f26">
+      <img src="/api/labelpreview?${q}" style="background:#0b0d11;border-radius:3px">
+      <span class="meta">→</span>
+      <span style="min-width:${s.w*2}px;display:inline-block">${after}</span>
+      <span class="meta" style="width:88px">0x${s.off.toString(16).toUpperCase()}</span>
+      <input value="${(s.text||'').replace(/"/g,'&quot;')}" placeholder="что тут написано"
+             style="width:150px" onchange="LABELS[${i}].text=this.value;labelsDraw()">
+    </div>`}).join('');
+}
+
+async function labelsApply(){
+  const slots=LABELS.filter(s=>s.text&&s.text.trim());
+  if(!slots.length){ log('сначала впиши хотя бы одну подпись','r'); return }
+  const face=($('#fontsel').selectedOptions[0]||{}).textContent||'по умолчанию';
+  if(!confirm(`Перерисовать ${slots.length} надпис(ь/и) шрифтом «${face}»?`)) return;
+  try{
+    const d=await api('/api/retypeset',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({slots, font:$('#fontsel').value,
+                           pad:+$('#lpad').value, dy:+$('#ldy').value})});
+    slots.forEach(s=>DIRTY.add(s.off));
+    log(`✓ перерисовал ${d.written}`+(d.failed.length?`, ${d.failed.length} не вышло: ${d.failed[0].why}`:''),
+        d.failed.length?'r':'g');
+    await refreshEdits(); labelsDraw(); drawTiles();
+  }catch(_){ log('перерисовка не удалась','r') }
 }
 
 /* ---- one font, every slot -------------------------------------------------

@@ -20,3 +20,6 @@ tools/spy/*.obj
 tools/spy/spy.c
 tools/spy/spy.def
 tools/spy/htusb_real.def
+
+# the captions people type for the artwork are their working notes
+studio/captions.json
