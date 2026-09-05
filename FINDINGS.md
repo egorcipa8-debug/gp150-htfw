@@ -1021,3 +1021,157 @@ readable and, with the same frame format, writable.
 
 `tools/ht_sysex.py` decodes and builds these frames, reassembles a capture into
 objects, and writes them out. It opens no MIDI port.
+
+## 25. The editor protocol, finished
+
+§24 stopped half way: the inner "data package" was only guessed at, and the
+parser silently dropped 22 frames. Both are now settled, and the second one
+explains the first.
+
+### The dropped frames
+
+`decode()` un-nibbled every payload. Twenty-two frames are not nibble-encoded -
+their bytes run up to 0x77 - so `unnibble` produced values above 255 and the
+frame was thrown away by the `except ValueError` that was meant to catch
+non-frames. Those twenty-two are exactly the interesting ones: they are the
+host asking for a chunk that went missing.
+
+```
+F0 7F 7B  00 00  03 06  02 05   01 00  5C 03  77  00 00 00  F7
+                        seq=2 chunk=5   id=1   off=476 len=119
+```
+
+`5C 03` is 476 and `38 07` is 952 - the same 14-bit low-first pair as the
+envelope, stepping by 119, the chunk size. So a resend request is plain
+seven-bit values, and only bulk data is nibbled. The parser now decides per
+frame and keeps both.
+
+### The data package
+
+Every nibble payload, in both directions, is one package:
+
+```
+01 <crc8> <len16 LE> | <cmd> <type> <dst16> <src16> <size16> <data[size]>
+```
+
+* `crc8` is the same CRC-8/0x31 as the envelope, but over eight whole bits
+  rather than seven, computed from `cmd` onward. Verified on every package in
+  the capture.
+* `len16` counts the body; `size16` counts `data`. A reply to a patch read has
+  `len16 = 1132`, `size16 = 1124`, and the frame's own `len16 = 1136 = 4 + 1132`.
+* `cmd` is `0x03` to read - and on every reply - and `0x00` to write.
+* `dst` and `src` are equal on a read. The one write in the capture, a rename,
+  has `dst=0x1091 src=0x1051` and carries `"123"` in ASCII.
+
+### The objects
+
+| id | what it is | size |
+|----|------------|------|
+| `0x1010` | patch name list, the browser | 4012 |
+| `0x1042` | User IR names | 412 |
+| `0x1052` | cab / IR model names | 2032 |
+| `0x1070` | session handshake | 16 |
+| `0x1080` | device state blob | 144 |
+| `0x1092` | amp model names | 2032 |
+| `0x2000` | device info, `V1.1.1` | 408 |
+| `0x2050` | input meter, pushed | 36 |
+| `0x2060` | tuner / level, pushed | 20 |
+| `0x3011` | the current patch | 1136 |
+| `0x3020` | current patch header and name | 92 |
+| `0x3031`/`0x3032`/`0x3033`/`0x3070`/`0x3080` | live state, pushed on every edit | 16-48 |
+
+`ht_sysex.py read <id>` rebuilds the request for any of the eight objects the
+capture actually asked for, and all eight come out **byte-identical** to what
+Suite sent. That is the whole basis for a read-only client: no invented frames,
+only shapes the device has already been asked for in front of us.
+
+## 26. The GP-200 project, and what it tells us about this one
+
+There is a public reverse-engineering effort on the GP-200, the GP-150's bigger
+sibling: a blog at `gp200-reversing.hashnode.dev` and an editor at
+`github.com/phash/gp200editor` whose `docs/sysex-protocol.md` documents that
+device's protocol in full. The GP-200 is a different envelope
+(`F0 21 25 7E "GP-2" <cmd> <sub>`), so none of it transfers directly - but three
+things line up hard enough to be worth writing down.
+
+**The patch is the same idea, and probably close to the same layout.** Their
+preset reads back as 1176 bytes; ours is 1136. Theirs holds a 16-byte name at
+decoded[28] and eleven 72-byte effect blocks (`14 00 44 00`, slot, active flag,
+`00 0F`, `u32` effect id, fifteen `float32`). Our 1136-byte object carries the
+factory name `It's GP-150` at offset 53 - theirs carries `It's GP-200`. The
+72-byte block marker is *not* present in ours, so the block layout differs, but
+the shape of the thing (header, name, author, routing order, per-slot blocks,
+controller assignments at the tail) is the family's and is the right thing to
+test our bytes against.
+
+**Their A2 answer contradicts the assumption behind §18.** They report that the
+GP-200 does not run neural inference at all: it runs FFT convolution of a fixed
+impulse response plus biquads, at 44.1 kHz, and Valeton's A2 support is a
+*desktop-side fit* - the editor turns the capture into that convolution and
+never runs a network on the pedal. If the GP-150 works the same way, then
+"compressing a `.nam` to fit" is the wrong frame entirely: the question is how
+well an IR-plus-biquads fit reproduces the model, not how few MACs the WaveNet
+can be pruned to. Our `nam2namb.py` measures the network honestly, but what the
+`.namb` actually contains needs checking against this before any more work goes
+into shrinking weights.
+
+**SWD is open, and that is the way into SDRAM.** They read `SEC_CONFIG @
+0x401F4460 = 0x00000008`, i.e. HAB open, no signature block, and dumped the
+whole 8 MB of FlexSPI over a five-pad header (`J24`: SWCLK, SWDIO, nRST, VREF,
+GND) with an ST-LINK and OpenOCD `dump_image` at `0x60000000` for `0x800000`.
+The GP-150 is the same silicon family. §23 established that the interface code
+lives at SDRAM `0x80000000..0x8002F760` and is *not* in the update image; §25
+establishes that the editor protocol reads objects, never addresses. A debug
+probe on the equivalent header is the one route that reads that memory directly -
+and it is read-only until we choose otherwise.
+
+Their updater notes are worth one line too: their command set has `0x01 = read
+region`, which is the first evidence any of these boxes will read flash back
+over MIDI. Ours (§20) is a different variant with a different CRC, so this is a
+hint about where to look, not a command we can send.
+
+## 27. The interface code is in the file after all - the bootloader moves it
+
+§23 concluded that the UI code at SDRAM `0x80000000..0x8002F760` is not in the
+update image: a prologue sweep over every base found nothing, no scatter table
+turned up, and no absolute reference to a UI string existed anywhere. That
+conclusion was wrong in its second half, and the GP-200 series says why.
+
+On the GP-200 the application is **not one flat image loaded at one address**.
+The bootloader copies two separate blocks out of flash at boot - one into the
+M7's tightly-coupled instruction memory (ITCM), one into external SDRAM - and
+then starts executing from ITCM. Their dialog renderer and LED driver had
+refused to disassemble for exactly the reason ours does: the bytes are in the
+file, at a flash offset, but every address inside them is written for where they
+will *be*, not where they *are*. Disassemble at the file's own base and it is
+noise. Once the real segment map was known, all of it decoded cleanly.
+
+That reframes the search here completely. We have been looking for code that
+carries `0x80000000`-shaped addresses inside a region that is executed in place.
+What we should be looking for is the **copy loop in the bootstrap** - region b at
+flash `0x38000` - and the source/destination/length triples it works from. Find
+those, and the SDRAM block is a slice of the file we already have, disassemblable
+at the right base, with the UI in it.
+
+Two more of their findings are worth having in front of us when that lands:
+
+* **The screen registry.** The GP-200 registers 20 screens, ids `0x00`-`0x14`:
+  boot splash, home, edit menu, signal chain, global settings, footswitch
+  assign, save, drum, tuner (`0x09`), looper, global EQ, CTRL, EXP, EXP
+  calibration, factory reset, bank select, overload warning, MIDI, a factory QC
+  screen (`0x13`, reachable on stock firmware by holding BACK+SAVE during the
+  boot splash) and an on-screen debug log (`0x14`, patch-only). If the GP-150
+  has the same structure, a screen id table is a small, findable thing, and it
+  is the index into the native GUI that this project has been trying to reach.
+* **The LED frame.** Six bytes written out one bit per indicator, with a
+  separate table for blink rates; each footswitch LED has three bits (red,
+  green, blue), so eight colours.
+
+Their method for confirming a screen id is worth recording too, because it needs
+no disassembly at all: patch the boot sequence to jump straight into screen *N*,
+reflash, power on, photograph the display. We have `thumb_patch.py` and a working
+flash path, so the same trick is available here - at the cost of a flash cycle
+per screen, and only with the user's say-so.
+
+None of this is confirmed on a GP-150 yet. It is a map of where to dig, from
+someone who dug in the same rock.

@@ -12,7 +12,10 @@ Several things here are, as far as we can tell, not published anywhere else:
   its width and height, so the artwork does not have to be found by guessing at
   row strides. It also settles the pixel order, which these notes had backwards;
 - **the NAM path** — the pedal reads `.namb`, not `.nam`, and its magic is in the
-  firmware, so the RT1064 runs the capture's own WaveNet;
+  firmware. Whether the RT1064 then runs the capture's own WaveNet or a fit of
+  it is an open question: the GP-200 work reports that that pedal runs FFT
+  convolution of an impulse response instead, and the same may be true here
+  (`FINDINGS.md` §26);
 - **the boot animation** — 448 KB of what read as noise is a 320x240 GIF.
 
 Both are verified byte-exactly, not inferred. Prior work by
@@ -23,6 +26,11 @@ and lists the compressed region as unexamined.
 No firmware is distributed here. Download images from valeton.net yourself.
 
 ---
+
+Work by other people that this project builds on - the GP-200 reverse-
+engineering series by tntexplosivesltd and the GP-200 editor by phash - is
+credited in [CREDITS.md](CREDITS.md), and each borrowed finding is marked
+where it is used in `FINDINGS.md`.
 
 ## Container format
 
