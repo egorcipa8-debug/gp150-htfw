@@ -1175,3 +1175,65 @@ per screen, and only with the user's say-so.
 
 None of this is confirmed on a GP-150 yet. It is a map of where to dig, from
 someone who dug in the same rock.
+
+## 28. Where the interface actually lives: below 0x38000, where updates never reach
+
+§27 took the GP-200's boot copy chain and expected the SDRAM block to be a
+slice of the update image, written for `0x80000000` rather than for where it
+sits. It is not. Here is the test and the result.
+
+**The veneers, enumerated.** Scanning section b for MOVW/MOVT pairs that build a
+constant in `0x80000000..0x8003FFFF` finds **73 distinct targets**, every one of
+them odd - Thumb function pointers - spanning `0x80000CCD` to `0x8002F761`. They
+sit in one dense run starting at section-b offset `0x002B36`, ten bytes apart:
+`MOVW r12,#lo; MOVT r12,#hi; BX r12`, over and over. That is an import table
+into the SDRAM module, and it gives us 73 known function entry points.
+
+**The sweep.** If the module were in the file, then at the right offset *F* the
+bytes at `F + (target - 0x80000000)` would be function prologues - `push {…}` or
+`push.w`. Sweeping every 2-byte alignment of all six sections against all 73
+targets:
+
+| section | best match |
+|---------|-----------|
+| b | 7 / 73 |
+| c | 5 / 73 |
+| d | 5 / 73 |
+| e | 4 / 73 |
+| f | 1 / 73 |
+| g | 7 / 73 |
+
+Seven out of seventy-three is what chance gives. The module is not in any
+section, at any alignment.
+
+**It is not hiding compressed, either.** The payload is already LZO-unpacked; a
+second compression layer would show up as a high-entropy block. There is exactly
+one in section b, `0x208000..0x278000`, and it is the boot GIF, whose header sits
+at `0x207AE5`. Nothing else in 5.2 MB looks compressed.
+
+**So where is it?** The section table says where each section is flashed: b at
+`0x38000`, c at `0x740000`, d at `0x800000`, e at `0x9C0000`, f at `0xA80000`.
+Everything below `0x38000` - 229,376 bytes - is never written by an update. The
+SDRAM module is 0x2F760 = 194,400 bytes. **It fits, with 35 KB to spare for the
+boot code itself.**
+
+That is consistent with everything: the GP-200's bootloader copies blocks out of
+flash at boot and lives below the lowest partition the updater can address; ours
+would be doing the same, out of a region no Valeton update has ever rewritten.
+It also explains why the interface has looked identical across firmware versions
+while everything else moved, and why no scatter table was ever going to turn up
+in the image - the copier is not in the image either.
+
+**What this costs us, precisely.** The native GUI cannot be edited by patching an
+update file, because the code that draws it is not in the update file. Reading
+it needs the flash below `0x38000`, and there are exactly two ways to that:
+
+1. a debug probe on the SWD header, as the GP-200 work did - reads all 8 MB,
+   read-only, and needs the case open;
+2. a read command in the resident updater, if ours has one. The GP-200's has
+   `0x01 = read a fixed-size region back`. Ours (§20) is a different variant, and
+   whether it has the same command is a question for the vendor library's
+   disassembly, not for the device.
+
+Until one of those happens, Studio edits artwork - which *is* in the image, and
+is indexed, guarded and reversible - and the native layout stays out of reach.
