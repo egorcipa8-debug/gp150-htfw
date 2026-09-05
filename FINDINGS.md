@@ -1237,3 +1237,89 @@ it needs the flash below `0x38000`, and there are exactly two ways to that:
 
 Until one of those happens, Studio edits artwork - which *is* in the image, and
 is indexed, guarded and reversible - and the native layout stays out of reach.
+
+## 29. A capture at a width the pedal can afford
+
+The A2 question, settled by measurement rather than by argument.
+
+### What the choice costs today
+
+An A2 capture is a SlimmableContainer holding two independently trained
+submodels - three channels and eight - and Suite always takes the three. Running
+both over the DI the vendor's own converter uses and comparing them, gain matched,
+over sixteen captures:
+
+| capture | ESR | dB |
+|---------|-----|----|
+| Soldano, Spiraling Clean | 0.0012 | -29.4 |
+| Soldano, Lazy Boy / 30 Days / Drop Anchor / Another Day | 0.0016-0.0027 | -28 to -26 |
+| Jcm800 | 0.0074 | -21.3 |
+| Soldano, High / Web Of The Dog / BYOS Drive | 0.012-0.016 | -19 to -18 |
+| Randall X2 Dimezone, all five | 0.020-0.029 | -17 to -15 |
+
+Clean captures lose nothing at three channels. High-gain ones lose real detail.
+So the vendor's choice is not wrong, it is just the only one they offer.
+
+### Why there is a third option
+
+The submodels are **not** nested - the three-channel one is not a slice of the
+eight-channel one, and their weights differ by more than a unit - so no
+intermediate width comes for free. But nothing forces three or eight either.
+
+The `.namb` the pedal reads carries a **binary description of the architecture**,
+not the source JSON: channel count, per-layer kernel sizes, dilations and the
+LeakyReLU slope, laid out from offset 0x50. A three-channel file and an
+eight-channel file of the same capture differ in **exactly two bytes**:
+`channels` at 0x5E and `bottleneck` at 0x60. The width is read from the file.
+
+And the vendor's own converter will emit any width: hand
+`convertNamToNambAtPath` a five-channel `.nam` and it returns a well-formed
+20124-byte `.namb` with its own checksum - which is what makes the checksum at
+0x18 a non-problem. It never had to be cracked.
+
+### What each width costs
+
+| channels | weights | MAC/sample | `.namb` | M7 at 48 kHz |
+|----------|---------|-----------|---------|--------------|
+| 3 | 1871 | 1731 | 7.8 KB | 14% (Suite ships this) |
+| 4 | 3210 | 3024 | 13.0 KB | 24% |
+| 5 | 4907 | 4675 | 19.7 KB | 37% |
+| 6 | 6962 | 6684 | 27.7 KB | 53% |
+| 8 | 12146 | 11776 | 47.9 KB | 94% |
+
+Four channels lands at 24%, within a point of the 22% the GP-200 project
+*measured* for that pedal's own amp engine. That is the width to aim at.
+
+### Training one
+
+`tools/nam_distill.py` distils the eight-channel submodel into a wider-than-stock
+student. The student is **widened out of the three-channel submodel**, with the
+new channels wired so they cannot reach the output yet - the widened model's
+output is bit-identical to the narrow one's, checked at 1.4e-16 - so training
+starts from exactly what Suite would have shipped and can only improve on it.
+Adam over random DI windows, the loss taken past the 6347-sample receptive field,
+the best checkpoint kept rather than the last.
+
+The forward pass is `nam2namb.WaveNet`'s; the gradients are hand-written and
+checked against finite differences (worst relative error 1.1e-4). `selftest`
+runs all of that.
+
+On `x2mysettings`, the worst capture in the set, twenty-five minutes:
+
+```
+Suite, 3 channels     ESR 0.02233   (-16.5 dB)     14% of the M7
+distilled, 4 channels ESR 0.00592   (-22.3 dB)     24% of the M7
+```
+
+The error is a quarter of what it was, at a cost the pedal is already known to
+carry for its own amp block. `gp150_re/x2mysettings-4ch.namb` is that model,
+13336 bytes, converted by the vendor library.
+
+**The honest caveat:** 24% is arithmetic - MAC/sample against 600 MHz - not a
+measurement on the device. Whether a four-channel model actually fits alongside
+the rest of a chain is something only loading it into a GP-150 will settle.
+
+Studio has a tab for all of this ("Оптимизировать намы"): pick a capture, see
+what each width would cost, measure what the stock choice loses, train, and
+convert - the training runs as a background job with a live log and can be
+stopped, keeping the best checkpoint.

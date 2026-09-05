@@ -89,6 +89,7 @@ dialog::backdrop{background:#0009}
   <a data-tab="scr" onclick="tab('scr')">Screen</a>
   <a data-tab="str" onclick="tab('str')">Text</a>
   <a data-tab="fnt" onclick="tab('fnt')">Font</a>
+  <a data-tab="nam" onclick="tab('nam')">Оптимизировать намы</a>
   <a data-tab="inf" onclick="tab('inf')">Image info</a>
   <a data-tab="dev" onclick="tab('dev')">Device</a>
 </nav>
@@ -288,6 +289,83 @@ dialog::backdrop{background:#0009}
   </section>
 
   <!-- ---------------- device ---------------- -->
+  <!-- ---------------- NAM ---------------- -->
+  <section id="nam" hidden>
+    <div class="card">
+      <div class="row">
+        <input id="nmpath" placeholder="…\capture.nam" style="flex:1;min-width:340px">
+        <button onclick="namBrowse()">Обзор…</button>
+        <button class="primary" onclick="namLook()">Разобрать</button>
+      </div>
+      <div class="hint">
+        Капча A2 приезжает контейнером с двумя обученными подмоделями — на 3 канала
+        и на 8. Suite всегда берёт трёхканальную, потому что восьмиканальная стоит
+        94% процессора и не влезает. Но ширина не зашита в педаль: <code>.namb</code>
+        описывает её сам, двумя байтами. Значит модель можно обучить на 4 или 5
+        каналов — уже слышно лучше, ещё по карману.
+      </div>
+      <div id="nmfiles" class="hint" style="display:none"></div>
+      <div id="nmabout" class="hint"></div>
+      <table id="nmwidths" style="display:none;border-collapse:collapse;font-size:13px">
+        <thead><tr>
+          <th style="text-align:left;padding:3px 12px 3px 0">каналов</th>
+          <th style="text-align:right;padding:3px 12px 3px 0">весов</th>
+          <th style="text-align:right;padding:3px 12px 3px 0">MAC/сэмпл</th>
+          <th style="text-align:right;padding:3px 12px 3px 0">.namb</th>
+          <th style="text-align:right;padding:3px 12px 3px 0">M7</th>
+          <th style="text-align:left;padding:3px 0"></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button onclick="namEsr()">Измерить, что теряет Suite</button>
+        <span class="meta">прогоняет обе подмодели по вендорскому DI и считает ESR
+          с выравниванием уровня</span>
+      </div>
+      <div id="nmesr" class="hint"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <label>Каналов
+          <select id="nmch" style="width:70px">
+            <option value="4" selected>4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+          </select></label>
+        <label>Минут <input type="number" id="nmmin" value="10" min="1" max="240" style="width:70px"></label>
+        <label>Секунд DI <input type="number" id="nmsec" value="20" min="5" max="120" style="width:70px"></label>
+        <button class="primary" id="nmgo" onclick="namTrain()">Обучить</button>
+        <button id="nmstop" onclick="namStop()" disabled>Остановить</button>
+        <span class="meta" id="nmstate"></span>
+      </div>
+      <div class="hint">
+        Учитель — восьмиканальная подмодель, ученик стартует из трёхканальной:
+        расширение сделано так, что выход в этот момент побайтово тот же, поэтому
+        хуже, чем ставит Suite, не станет. Дальше Adam по случайным окнам DI.
+        Остановить можно в любой момент — сохраняется лучший результат, а не последний.
+      </div>
+      <pre id="nmlog" style="max-height:300px;overflow:auto;background:#111318;
+           padding:10px;border-radius:6px;font-size:12px;line-height:1.35"></pre>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <input id="nmout" placeholder="обученный .nam" style="flex:1;min-width:340px">
+        <button class="primary" onclick="namConvert()">Сделать .namb</button>
+        <button onclick="namCheck()">Сверить с учителем</button>
+      </div>
+      <div class="hint">
+        Конвертирует вендорская <code>5868USB.dll</code> — та же, что работает в Suite,
+        так что контрольную сумму и заголовок считает она сама.
+      </div>
+      <div id="nmconv" class="hint"></div>
+    </div>
+  </section>
+
   <section id="dev" hidden>
     <div class="card">
       <div class="row">
@@ -408,10 +486,109 @@ async function api(p,o){
   return j}
 
 function tab(n){document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.tab===n));
-  ['gfx','scr','str','fnt','inf','dev'].forEach(s=>$('#'+s).hidden=(s!==n));
+  ['gfx','scr','str','fnt','nam','inf','dev'].forEach(s=>$('#'+s).hidden=(s!==n));
   if(n==='str')loadStrings(); if(n==='inf')fillInfo(); if(n==='dev')devInit();
   if(n==='fnt'){ FONTS.length ? fontPreview() : fontInit(); }
+  if(n==='nam')namInit();
   if(n==='scr')screenInit();}
+
+/* ---------------- NAM: a capture at a width the pedal can afford ---------- */
+
+let NM={pos:0,timer:null,dir:null};
+
+function namInit(){ if(!NM.dir) NM.dir=''; }
+
+async function namBrowse(dir){
+  const d=await api('/api/browse?ext=.nam&dir='+encodeURIComponent(
+      dir!==undefined?dir:(NM.dir||$('#nmpath').value.replace(/[^\\\/]*$/,''))));
+  NM.dir=d.dir;
+  const box=$('#nmfiles'); box.style.display='';
+  const up=`<a href="#" onclick="namBrowse('${d.parent.replace(/\\/g,'\\\\')}');return false">..</a>`;
+  const dirs=d.dirs.map(x=>`<a href="#" onclick="namBrowse('${(d.dir+'\\'+x).replace(/\\/g,'\\\\')}');return false">${x}\\</a>`);
+  const files=d.files.map(x=>`<a href="#" onclick="namPick('${(d.dir+'\\'+x).replace(/\\/g,'\\\\')}');return false"><b>${x}</b></a>`);
+  box.innerHTML=`<div class="meta">${d.dir}</div>`+[up,...dirs,...files].join(' &nbsp; ');
+}
+
+function namPick(p){ $('#nmpath').value=p; $('#nmfiles').style.display='none'; namLook(); }
+
+async function namLook(){
+  const p=$('#nmpath').value.trim(); if(!p){log('укажи файл капчи','r');return}
+  const d=await api('/api/nam?path='+encodeURIComponent(p));
+  $('#nmabout').innerHTML=`<b>${d.name}</b>${d.gear?' — '+d.gear:''} · ${d.container}, NAM ${d.nam_version},
+    ${d.rate} Гц · ${d.layers} слоёв, окно ${d.receptive} сэмплов
+    (${(d.receptive/48).toFixed(0)} мс) · Suite ставит ${d.stock} канала, учитель ${d.teacher}`;
+  const t=$('#nmwidths'); t.style.display='';
+  t.querySelector('tbody').innerHTML=d.widths.map(w=>{
+    const note = w.channels===d.stock ? 'это ставит Suite'
+               : w.load>60 ? 'не влезет' : (w.load<30?'по карману':'тяжеловато');
+    const dim = w.load>60 ? 'opacity:.45' : '';
+    return `<tr style="${dim}">
+      <td style="padding:2px 12px 2px 0">${w.channels}</td>
+      <td style="text-align:right;padding:2px 12px 2px 0">${w.weights}</td>
+      <td style="text-align:right;padding:2px 12px 2px 0">${w.macs}</td>
+      <td style="text-align:right;padding:2px 12px 2px 0">${(w.namb/1024).toFixed(1)} KB</td>
+      <td style="text-align:right;padding:2px 12px 2px 0">${w.load}%</td>
+      <td class="meta" style="padding:2px 0">${note}</td></tr>`}).join('');
+  log('разобрал '+d.name);
+}
+
+async function namEsr(){
+  const p=$('#nmpath').value.trim(); if(!p){log('укажи файл капчи','r');return}
+  $('#nmesr').textContent='считаю…';
+  const st=$('#nmout').value.trim();
+  const d=await api('/api/nam_esr?path='+encodeURIComponent(p)+(st?'&student='+encodeURIComponent(st):''));
+  $('#nmesr').innerHTML=`<div class="meta">против восьмиканальной, ${d.seconds} с DI (${d.di})</div>`+
+    d.rows.map(r=>`${r.label} (${r.channels} кан.) — ESR <b>${r.esr.toFixed(5)}</b> (${r.db} dB)`).join('<br>');
+}
+
+async function namTrain(){
+  const p=$('#nmpath').value.trim(); if(!p){log('укажи файл капчи','r');return}
+  $('#nmlog').textContent=''; NM.pos=0;
+  await api('/api/nam_train',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({path:p,channels:+$('#nmch').value,
+      minutes:+$('#nmmin').value,seconds:+$('#nmsec').value})});
+  $('#nmgo').disabled=true; $('#nmstop').disabled=false;
+  $('#nmstate').textContent='учится…';
+  if(NM.timer)clearInterval(NM.timer);
+  NM.timer=setInterval(namPoll,1500); namPoll();
+}
+
+async function namStop(){
+  await api('/api/nam_stop',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  $('#nmstate').textContent='останавливаю после текущего шага…';
+}
+
+async function namPoll(){
+  const d=await api('/api/nam_log?pos='+NM.pos);
+  NM.pos=d.pos;
+  if(d.lines.length){
+    const el=$('#nmlog'); el.textContent+=d.lines.join('\n')+'\n'; el.scrollTop=el.scrollHeight;
+  }
+  if(!d.running){
+    clearInterval(NM.timer); NM.timer=null;
+    $('#nmgo').disabled=false; $('#nmstop').disabled=true;
+    if(d.error){ $('#nmstate').textContent='сорвалось'; log('обучение: '+d.error,'r'); }
+    else if(d.result){
+      $('#nmstate').textContent='готово';
+      $('#nmout').value=d.result.out;
+      log(`обучено ${d.result.channels} кан.: ESR ${d.result.esr_before.toFixed(5)} → ${d.result.esr_after.toFixed(5)}`,'g');
+    } else $('#nmstate').textContent='';
+  }
+}
+
+async function namCheck(){ await namEsr(); }
+
+async function namConvert(){
+  const p=$('#nmout').value.trim(); if(!p){log('сначала обучи модель','r');return}
+  const d=await api('/api/nam_convert',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({path:p})});
+  if(!d.ok){log(d.error,'r');return}
+  const h=d.header;
+  $('#nmconv').innerHTML=`<b>${d.out}</b><br>${d.size} байт · ${h.weights} весов ·
+    ${h.sample_rate} Гц · громкость ${(+h.loudness).toFixed(2)} LUFS ·
+    контрольная сумма 0x${(h.checksum>>>0).toString(16).toUpperCase()}`;
+  log('собрал .namb, '+d.size+' байт','g');
+}
 
 async function refresh(){
   ST=await api('/api/state');

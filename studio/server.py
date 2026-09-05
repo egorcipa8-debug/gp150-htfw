@@ -1113,6 +1113,116 @@ PROJECT = Project()
 
 
 # --------------------------------------------------------------------------
+# NAM captures
+#
+# An A2 capture ships two trained submodels, three channels and eight. Suite
+# takes the three-channel one because the eight-channel one costs 94% of the
+# M7 and cannot run. Nothing forces that choice: the `.namb` describes its own
+# width, so a model can be trained at four or five channels - wide enough to
+# hear, cheap enough to run. `tools/nam_distill.py` does the training; this is
+# the part of it Studio drives, as a background job with a log the page tails.
+# --------------------------------------------------------------------------
+
+NAM = {'running': False, 'lines': [], 'stop': False, 'result': None,
+       'error': None, 'source': None}
+NAM_LOCK = threading.Lock()
+
+
+def nam_tools():
+    """Imported late - numpy is optional for the rest of Studio."""
+    import nam2namb
+    import nam_distill
+    return nam2namb, nam_distill
+
+
+def nam_say(line):
+    with NAM_LOCK:
+        NAM['lines'].append(str(line))
+
+
+def nam_survey(path):
+    """What is in a capture, and what each width would cost to run."""
+    import copy
+    n2, nd = nam_tools()
+    nam = n2.load(path)
+    subs = n2.submodels(nam)
+    la = nd.layer_of(subs[0][1])
+    rows = []
+    for c in range(int(la['channels']), 9):
+        lb = copy.deepcopy(la)
+        lb['channels'] = c
+        mm = nd.macs(lb)
+        w = nd.nweights(lb)
+        rows.append({'channels': c, 'weights': w, 'macs': mm,
+                     'namb': w * 4 + 496,
+                     'load': round(100.0 * mm * 48000.0 / nd.CORE_HZ, 1)})
+    meta = nam.get('metadata') or {}
+    return {'ok': True, 'name': meta.get('name') or os.path.basename(path),
+            'gear': ' '.join(x for x in (meta.get('gear_make'),
+                                         meta.get('gear_model')) if x),
+            'nam_version': nam.get('version'),
+            'container': nam.get('architecture'),
+            'rate': nam.get('sample_rate'),
+            'layers': len(la['kernel_sizes']),
+            'receptive': nd.receptive(la),
+            'stock': int(la['channels']),
+            'teacher': int(nd.layer_of(subs[-1][1])['channels']),
+            'widths': rows}
+
+
+def nam_esr(path, student=None, seconds=10.0):
+    """How far each model is from the eight-channel one it is standing in for."""
+    n2, nd = nam_tools()
+    di = n2.default_di()
+    if di is None:
+        raise ValueError("no DI wav found - Valeton Suite ships the one the "
+                         "vendor's own converter uses")
+    x = n2.read_di(di, 48000, seconds)
+    nam = n2.load(path)
+    subs = n2.submodels(nam)
+    rf = nd.receptive(nd.layer_of(subs[0][1]))
+    ref = n2.WaveNet(subs[-1][1]).process(x)
+    out = []
+
+    def row(label, y, ch):
+        e = n2.esr(y[rf:], ref[rf:])
+        out.append({'label': label, 'channels': ch, 'esr': e,
+                    'db': round(10.0 * _np.log10(max(e, 1e-12)), 1)})
+
+    row('what Suite ships', n2.WaveNet(subs[0][1]).process(x),
+        int(nd.layer_of(subs[0][1])['channels']))
+    if student and os.path.isfile(student):
+        st = n2.load(student)
+        row(os.path.basename(student), n2.WaveNet(st).process(x),
+            int(nd.layer_of(st)['channels']))
+    return {'ok': True, 'di': os.path.basename(di), 'seconds': seconds,
+            'rows': out}
+
+
+def nam_start(path, channels, minutes, seconds, out=None):
+    if NAM['running']:
+        return {'ok': False, 'error': 'a run is already going'}
+    with NAM_LOCK:
+        NAM.update({'running': True, 'lines': [], 'stop': False,
+                    'result': None, 'error': None, 'source': path})
+
+    def work():
+        try:
+            _n2, nd = nam_tools()
+            NAM['result'] = nd.run_train(
+                path, channels, out, minutes=minutes, seconds=seconds,
+                report=nam_say, should_stop=lambda: NAM['stop'])
+        except BaseException as e:                            # noqa: BLE001
+            NAM['error'] = str(e)
+            nam_say('failed: %s' % e)
+        finally:
+            NAM['running'] = False
+
+    threading.Thread(target=work, daemon=True).start()
+    return {'ok': True}
+
+
+# --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -1349,14 +1459,30 @@ class Handler(BaseHTTPRequestHandler):
                 buf = io.BytesIO()
                 im.save(buf, 'PNG')
                 return self._send(200, buf.getvalue(), 'image/png')
+            if u.path == '/api/nam':
+                return self._json(nam_survey(q['path'][0]))
+            if u.path == '/api/nam_esr':
+                return self._json(nam_esr(q['path'][0],
+                                          q.get('student', [None])[0],
+                                          float(q.get('seconds', ['10'])[0])))
+            if u.path == '/api/nam_log':
+                pos = int(q.get('pos', ['0'])[0])
+                with NAM_LOCK:
+                    lines = NAM['lines'][pos:]
+                    n = len(NAM['lines'])
+                return self._json({'ok': True, 'pos': n, 'lines': lines,
+                                   'running': NAM['running'],
+                                   'result': NAM['result'],
+                                   'error': NAM['error']})
             if u.path == '/api/browse':
                 d = q.get('dir', [os.path.expanduser('~')])[0]
+                ext = q.get('ext', ['.bin'])[0].lower()
                 try:
                     entries = sorted(os.listdir(d))
                 except OSError as e:
                     return self._err(e)
                 dirs = [x for x in entries if os.path.isdir(os.path.join(d, x))]
-                bins = [x for x in entries if x.lower().endswith('.bin')]
+                bins = [x for x in entries if x.lower().endswith(ext)]
                 return self._json({'dir': os.path.abspath(d),
                                    'parent': os.path.dirname(os.path.abspath(d)),
                                    'dirs': dirs[:400], 'files': bins[:400]})
@@ -1556,6 +1682,28 @@ class Handler(BaseHTTPRequestHandler):
                 r = upd(h)
                 return self._json({'ok': r == 0, 'result': r,
                                    'handle': '0x%X' % h})
+            if u.path == '/api/nam_train':
+                p = data.get('path', '')
+                if not os.path.isfile(p):
+                    return self._json({'ok': False, 'error': 'no such capture'})
+                return self._json(nam_start(
+                    p, int(data.get('channels', 4)),
+                    float(data.get('minutes', 10)),
+                    float(data.get('seconds', 20)),
+                    data.get('out') or None))
+            if u.path == '/api/nam_stop':
+                NAM['stop'] = True
+                return self._json({'ok': True})
+            if u.path == '/api/nam_convert':
+                n2, _nd = nam_tools()
+                p = data.get('path', '')
+                if not os.path.isfile(p):
+                    return self._json({'ok': False, 'error': 'no such file'})
+                out = data.get('out') or (os.path.splitext(p)[0] + '.namb')
+                n2.convert(p, out, float(data.get('slim', 0.0)))
+                h = n2.namb_header(out)
+                return self._json({'ok': True, 'out': out,
+                                   'size': os.path.getsize(out), 'header': h})
             if u.path == '/api/revert':
                 PROJECT.revert()
                 return self._json({'ok': True, 'edits': 0})
