@@ -1323,3 +1323,53 @@ Studio has a tab for all of this ("Оптимизировать намы"): pick
 what each width would cost, measure what the stock choice loses, train, and
 convert - the training runs as a background job with a live log and can be
 stopped, keeping the best checkpoint.
+
+## 30. The system font: searched again, still not in the file
+
+The menus - `Gain`, `Global EQ`, `Tuner`, `USB Settings`, `Band 1 Gain` - are
+drawn by the pedal itself, and re-typefacing them means finding the glyphs. §23
+said they are not in the payload. Now that §28 explains *why* code can be
+missing from an update image, the search was worth running again, properly.
+
+**What was looked for, and what came back:**
+
+* **An outline font.** TrueType/OpenType/WOFF/TTC signatures across all seven
+  sections, and the table tags a real font must carry - `glyf`, `cmap`, `head`,
+  `hhea`, `hmtx`, `maxp`, `name`, `OS/2`, `post`, `loca`, `CFF `. One accidental
+  `loca` in 8 MB and no coincident tags. The `00 01 00 00` hits are what that
+  byte pattern always is in a binary: noise.
+* **A glyph descriptor table**, which is how an embedded UI stores a bitmap
+  font: a record per glyph holding an index into a bitmap blob plus the box.
+  Scanned for runs of 8-, 10-, 12- and 16-byte records whose index only ever
+  grows and whose box is a plausible glyph size. The longest run in the whole
+  image is 59 records - an ASCII set needs 95 - its index steps by 512 to 1800
+  at a time, far too much for a 4x6 box, and the data in front of it does not
+  render as letters.
+* **Every section identified**, so nothing is left over to hide a font in:
+  `b` the application with the strings and the boot GIF, `c` the cab/IR
+  catalog, `d` the DSP, `e` cab names, `f` the patch bank, and `g`/`h`.
+
+That is consistent with §28: the interface code lives at SDRAM `0x80000000` and
+comes from the flash below `0x38000` that no update image contains. The font is
+almost certainly down there with the code that uses it.
+
+**The honest gap.** Section `g` is 647,036 bytes at maximum entropy (7.996 bits
+per byte), its destination field reads `0x00000000`, it is not LZO, it has no
+repeating key - and the updater *does* send it, 15,406 frames of it. It is not
+identified. If it is an encrypted image of something, this search cannot see
+inside it and the font could be in there. Against that: 647,036 bytes does not
+fit in the 229,376 below `0x38000`, so whatever it is, it is not simply the
+boot region. Section `h`, 16,320 bytes, is a table of repeated `0x2ECC` u32s
+and is not identified either.
+
+**What is editable today.** The *words* are in the file - `Gain`, `Global EQ`,
+`Tuner`, `MIC Monitor`, `Reset factory patches`, `Band 1 Gain` and the rest sit
+in the string chains in section b around `0x030000` and `0x290000`, and Studio's
+Text tab edits them. The lettering in the artwork - the AMP/DLY/VOL block tiles -
+can be re-typefaced (§ the Font tab). The menu type cannot, yet.
+
+**What would change that.** The flash below `0x38000`. Either a debug probe on
+the SWD header, as the GP-200 work did, or a read command in the resident
+updater if ours has one - the GP-200's is `0x01`, and ours is a different
+variant whose command set can be read out of the vendor library without going
+near the device.
