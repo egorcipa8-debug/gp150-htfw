@@ -88,6 +88,7 @@ dialog::backdrop{background:#0009}
   <a class="on" data-tab="gfx" onclick="tab('gfx')">Graphics</a>
   <a data-tab="str" onclick="tab('str')">Text</a>
   <a data-tab="fnt" onclick="tab('fnt')">Font</a>
+  <a data-tab="lay" onclick="tab('lay')">Раскладка</a>
   <a data-tab="nam" onclick="tab('nam')">Оптимизировать намы</a>
   <a data-tab="inf" onclick="tab('inf')">Image info</a>
   <a data-tab="dev" onclick="tab('dev')">Device</a>
@@ -238,6 +239,41 @@ dialog::backdrop{background:#0009}
   </section>
 
   <!-- ---------------- device ---------------- -->
+  <!-- ---------------- layout ---------------- -->
+  <section id="lay" hidden>
+    <div class="card">
+      <div class="row">
+        <b class="meta">Экран</b>
+        <select id="lyscr" style="min-width:220px" onchange="lyLoad()"></select>
+        <button onclick="lyInit()">Перечитать</button>
+        <label class="meta"><input type="checkbox" id="lygrid" checked onchange="lyDraw()"> сетка</label>
+        <div class="spacer"></div>
+        <button class="primary" id="lyapply" onclick="lyApply()" disabled>Записать в прошивку</button>
+        <button onclick="lyReset()">Сбросить правки</button>
+        <span id="lystate" class="meta"></span>
+      </div>
+      <div class="hint">
+        Педаль рисует интерфейс на LVGL, а размеры и координаты каждого элемента
+        лежат в прошивке <b>непосредственными числами в коде</b>. Здесь они
+        показаны прямоугольниками: тащи за середину &mdash; двигаешь, за правый нижний
+        угол &mdash; меняешь размер, либо правь числа справа. <b>Записать</b> меняет
+        те самые константы на месте.<br>
+        Координаты в LVGL отсчитываются от родителя, поэтому холст &mdash; схема, а не
+        точная картинка экрана. И число обязано влезть в ту же инструкцию, что
+        стоит сейчас: если не влезает, эта правка честно откажется, а остальные
+        применятся.
+      </div>
+      <div class="row" style="align-items:flex-start">
+        <div id="lycanvas" style="position:relative;width:640px;height:480px;
+             background:#0b0d11;border:1px solid #2a2f3a;border-radius:6px;flex:0 0 auto"></div>
+        <div style="flex:1;min-width:240px">
+          <div id="lyinsp" class="hint">выбери прямоугольник</div>
+          <div id="lylist" style="max-height:430px;overflow:auto;font-size:12px"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ---------------- NAM ---------------- -->
   <section id="nam" hidden>
     <div class="card">
@@ -566,10 +602,11 @@ async function api(p,o){
   return j}
 
 function tab(n){document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.tab===n));
-  ['gfx','str','fnt','nam','inf','dev'].forEach(s=>$('#'+s).hidden=(s!==n));
+  ['gfx','str','fnt','lay','nam','inf','dev'].forEach(s=>$('#'+s).hidden=(s!==n));
   if(n==='str')loadStrings(); if(n==='inf')fillInfo(); if(n==='dev')devInit();
   if(n==='fnt') fontInit();
   if(n==='nam')namInit();
+  if(n==='lay')lyInit();
 }
 
 /* ---------------- NAM: a capture at a width the pedal can afford ---------- */
@@ -1296,6 +1333,154 @@ async function applyText(){
     await refreshEdits(); fontPreview();
   }catch(_){ log('could not write that','r') }
 }
+
+/* ---- the native screen layout -------------------------------------------
+   Every widget's position and size is an immediate in the interface code, so
+   moving a box here is a change to those numbers and nothing else. */
+
+const LYS = 2;                     /* the canvas is the 320x240 screen at 2x */
+let LY = {screens: [], items: [], sel: -1, dirty: {}};
+
+async function lyInit(){
+  let d;
+  try{ d = await api('/api/layout'); }
+  catch(_){ log('сначала открой прошивку','r'); return }
+  LY.screens = d.screens;
+  const sel = $('#lyscr'), keep = sel.value;
+  sel.innerHTML = '';
+  d.screens.forEach(x => {
+    const o = document.createElement('option');
+    o.value = x.i;
+    o.textContent = 'экран ' + x.i + ' — ' + x.widgets + ' элемент(ов)';
+    sel.appendChild(o);
+  });
+  if(keep) sel.value = keep;
+  log('раскладка: ' + d.screens.length + ' экранов; set_pos 0x' +
+      d.set_pos.toString(16).toUpperCase() + ', set_size 0x' +
+      d.set_size.toString(16).toUpperCase(), 'g');
+  lyLoad();
+}
+
+async function lyLoad(){
+  const i = +$('#lyscr').value || 0;
+  const d = await api('/api/layout_screen?screen=' + i);
+  LY.items = d.items; LY.sel = -1; LY.dirty = {};
+  $('#lyapply').disabled = true; $('#lystate').textContent = '';
+  lyDraw();
+}
+
+function lyDraw(){
+  const c = $('#lycanvas');
+  c.innerHTML = '';
+  if($('#lygrid').checked){
+    const g = document.createElement('div');
+    g.style.position = 'absolute'; g.style.inset = '0';
+    g.style.pointerEvents = 'none'; g.style.opacity = '.25';
+    g.style.backgroundImage =
+      'linear-gradient(#3a4050 1px,transparent 1px),' +
+      'linear-gradient(90deg,#3a4050 1px,transparent 1px)';
+    g.style.backgroundSize = (32 * LYS) + 'px ' + (24 * LYS) + 'px';
+    c.appendChild(g);
+  }
+  LY.items.forEach((it, i) => {
+    const el = document.createElement('div');
+    const hue = (i * 47) % 360;
+    el.style.cssText =
+      'position:absolute;left:' + (it.x * LYS) + 'px;top:' + (it.y * LYS) + 'px;' +
+      'width:' + (it.w * LYS) + 'px;height:' + (it.h * LYS) + 'px;box-sizing:border-box;' +
+      'border:1px solid hsl(' + hue + ' 70% 60%);cursor:move;' +
+      'background:hsl(' + hue + ' 70% 60% / ' + (i === LY.sel ? 0.22 : 0.07) + ')';
+    el.title = i + ': ' + it.w + '×' + it.h + ' @ ' + it.x + ',' + it.y;
+    const tag = document.createElement('div');
+    tag.textContent = i;
+    tag.style.cssText = 'position:absolute;left:2px;top:0;font-size:10px;' +
+      'line-height:11px;color:hsl(' + hue + ' 70% 78%)';
+    el.appendChild(tag);
+    const grip = document.createElement('div');
+    grip.style.cssText = 'position:absolute;right:-3px;bottom:-3px;width:9px;' +
+      'height:9px;border-radius:2px;cursor:nwse-resize;background:hsl(' + hue + ' 70% 60%)';
+    el.appendChild(grip);
+    el.onmousedown = e => { if(e.target === grip) return; lyDrag(e, i, false); };
+    grip.onmousedown = e => lyDrag(e, i, true);
+    c.appendChild(el);
+  });
+  lyList();
+}
+
+function lyDrag(e, i, resize){
+  e.preventDefault(); e.stopPropagation();
+  LY.sel = i; lyDraw();
+  const it = LY.items[i];
+  const x0 = e.clientX, y0 = e.clientY;
+  const ox = it.x, oy = it.y, ow = it.w, oh = it.h;
+  function move(ev){
+    const dx = Math.round((ev.clientX - x0) / LYS);
+    const dy = Math.round((ev.clientY - y0) / LYS);
+    if(resize){ it.w = Math.max(1, ow + dx); it.h = Math.max(1, oh + dy); }
+    else { it.x = Math.max(0, ox + dx); it.y = Math.max(0, oy + dy); }
+    lyMark(i); lyDraw();
+  }
+  function up(){
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+  }
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+function lyMark(i){
+  const it = LY.items[i];
+  [['x','x_at'],['y','y_at'],['w','w_at'],['h','h_at']].forEach(pair => {
+    const at = it[pair[1]];
+    if(at !== null && at !== undefined) LY.dirty[at] = it[pair[0]];
+  });
+  $('#lyapply').disabled = false;
+  $('#lystate').textContent = Object.keys(LY.dirty).length + ' изменённых чисел';
+}
+
+function lyHex(v){ return '0x' + v.toString(16).toUpperCase(); }
+
+function lyList(){
+  const it = LY.items[LY.sel], k = LY.sel;
+  if(!it){
+    $('#lyinsp').textContent = 'выбери прямоугольник';
+  } else {
+    const dis = it.x_at === null ? ' disabled' : '';
+    $('#lyinsp').innerHTML =
+      '<div class="row" style="gap:6px">' +
+      '<label>X <input type="number" value="' + it.x + '" style="width:64px"' + dis +
+        ' onchange="LY.items[' + k + '].x=+this.value;lyMark(' + k + ');lyDraw()"></label>' +
+      '<label>Y <input type="number" value="' + it.y + '" style="width:64px"' + dis +
+        ' onchange="LY.items[' + k + '].y=+this.value;lyMark(' + k + ');lyDraw()"></label>' +
+      '<label>Ш <input type="number" value="' + it.w + '" style="width:64px"' +
+        ' onchange="LY.items[' + k + '].w=+this.value;lyMark(' + k + ');lyDraw()"></label>' +
+      '<label>В <input type="number" value="' + it.h + '" style="width:64px"' +
+        ' onchange="LY.items[' + k + '].h=+this.value;lyMark(' + k + ');lyDraw()"></label>' +
+      '</div><div class="meta">константы: ' +
+      (it.x_at === null ? 'позиция не задаётся числами'
+                        : 'x ' + lyHex(it.x_at) + ', y ' + lyHex(it.y_at)) +
+      ', ш ' + lyHex(it.w_at) + ', в ' + lyHex(it.h_at) + '</div>';
+  }
+  $('#lylist').innerHTML = LY.items.map((r, i) =>
+    '<div style="padding:2px 0;cursor:pointer;' + (i === LY.sel ? 'color:#8fd' : '') +
+    '" onclick="LY.sel=' + i + ';lyDraw()">' + i + ': ' + r.w + '×' + r.h +
+    ' @ ' + r.x + ',' + r.y + '</div>').join('');
+}
+
+async function lyApply(){
+  const edits = Object.keys(LY.dirty).map(at => ({at: +at, value: +LY.dirty[at]}));
+  if(!edits.length){ log('нечего писать','r'); return }
+  if(!confirm('Записать ' + edits.length + ' чисел в прошивку?')) return;
+  const d = await api('/api/layout_set', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({edits})});
+  log('✓ записано ' + d.written +
+      (d.failed.length ? ', ' + d.failed.length + ' не влезли: ' + d.failed[0].why : ''),
+      d.failed.length ? 'r' : 'g');
+  LY.dirty = {}; $('#lyapply').disabled = true;
+  await refreshEdits(); lyLoad();
+}
+
+function lyReset(){ lyLoad(); }
 
 /* ---- the pedal's own menu typeface ---------------------------------------
    Fourteen LVGL fonts in the SDRAM half of section b. See FINDINGS §32 for

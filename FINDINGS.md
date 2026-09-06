@@ -1563,3 +1563,71 @@ back as Georgia Bold, and `htfw_tool verify` passes on all seven sections.
 **So the menu type can be changed after all.** §30 said it could not, and gave
 the searches that had failed; every one of those searches was run against the
 wrong addresses.
+
+## 33. The layout is numbers in the code, and the numbers can be changed
+
+§32 found that the interface is LVGL and that it is in the file. This is what
+that is worth: **the position and size of every widget on every screen is an
+immediate in the instruction stream**, and an immediate can be rewritten.
+
+### The setters name themselves
+
+Nothing here is hard-coded to one build. `thumb_imm.py` walks the interface code
+halfword by halfword, decoding the four instructions that put a constant in a
+register - `MOVS Rd,#imm8`, `MOV.W Rd,#imm12`, `MOVW Rd,#imm16`, `MVN` - and
+remembering them until a `BL` consumes them. On V1.1.1 that finds **9,327 call
+sites**, and ranking the targets by how often they are reached with two constant
+arguments settles the question by itself:
+
+| target | calls with two constants | sample arguments | |
+|--------|-------------------------|------------------|-|
+| `0x8002DA98` | 267 | (166,167) (166,38) (162,127) | **set_size** |
+| `0x8002B880` | 239 | (0,50) (0,18) (0,19) | |
+| `0x8002D9D2` | 182 | (0,9) (0,45) (286,43) | **set_pos** |
+| `0x8002DDAA` | 77 | (255,0) always | opacity |
+| `0x8002DE88` | 52 | (4,0) always | |
+
+The top two are told apart by which is handed the larger numbers - a size setter
+gets widths and heights, a position setter gets coordinates that are often zero.
+Both then match exactly what the decompiler shows: LVGL style properties 1 and 4,
+and 7 and 8.
+
+### What a screen looks like
+
+Fifteen screens are registered, and their handlers lay out 177 widgets between
+them. The global settings screen reads, straight out of the file:
+
+```
+  #   x, y      w, h        where each constant lives
+  0   0, 0      320, 240    w 0x800055A4  h 0x800055A2      the screen
+  1   0, 0      320, 44     w 0x800055F0  h 0x800055EE      the header
+  2   0, 44     320, 133    w 0x80005616  h 0x80005614      the body
+  3   0, 177    320, 63     w 0x8000563C  h 0x8000563A      the footer
+  5   10, 12    200, 30     w 0x800056A6  h 0x800056A2      the title
+  6   242, 4    68, 36      w 0x80005710  h 0x8000570C
+  7   0, 5      106, 24     w 0x80005764  h 0x80005760   \
+  8   107, 5    106, 24     w 0x80005788  h 0x80005784    > three tabs
+  9   214, 5    106, 24     w 0x800057AC  h 0x800057A8   /
+```
+
+Three 106-wide tabs at x = 0, 107 and 214 is a tab bar, and it is in there as
+nine numbers.
+
+### Changing one
+
+`lv_layout.py set --at 0x800056A6 --value 240` widened that title from 200 to
+240: **one byte of the payload changed**, the value reads back, and every
+section CRC and the whole-file CRC verify. That is the whole edit.
+
+The limit is honest and worth stating: an instruction cannot change length in
+place, so a new value has to fit the encoding that is already there. A `MOVS`
+holds 0 to 255, a `MOVW` holds 0 to 65535, a `MOV.W` holds whatever
+ThumbExpandImm can spell. Ask for 260 where a `MOVS` sits and the tool refuses
+*that* edit and applies the rest, rather than writing four bytes into a
+two-byte hole.
+
+Studio's **Раскладка** tab draws the screen as boxes on a 320x240 canvas -
+drag to move, drag the corner to resize, or type the numbers - and writes the
+constants back. Positions in LVGL are relative to a widget's parent, so the
+canvas is a schematic and not a render of the screen; that is said on the tab
+rather than glossed over.

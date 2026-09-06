@@ -10,6 +10,9 @@ here, on whatever image you point it at:
     the same bytes it came from;
   * the boot animation is found by walking the GIF's own block structure, and
     putting it back where it came from reproduces the payload exactly;
+  * section b's load table reads, its halves are consecutive, and the fonts
+    and screen layout behind it are found - with one layout constant edited
+    in memory and read back;
   * the packet CRC-8 table matches the one in Valeton Suite's library, and a
     frame survives encode/decode;
   * a NAM capture, if you pass one, loads with every weight accounted for and
@@ -260,6 +263,84 @@ def test_nam(path):
                   "ESR %.4f between the narrowest and the widest" % e)
 
 
+def test_interface(path):
+    """The load table, the fonts and the layout - the three things §32 turned up.
+
+    All of it reads the file only; the one write goes to a copy in memory and is
+    checked by reading the value back, then undone. Nothing reaches the disk.
+    """
+    import flat_image
+    import htfw_tool as H
+    import lv_font
+    import lv_layout
+    import thumb_imm
+
+    fw = H.Firmware(open(path, 'rb').read())
+    tbl = flat_image.load_table(fw, fw.body)
+    check("section b carries a load table", len(tbl) == 2,
+          "%d blocks" % len(tbl))
+    if len(tbl) != 2:
+        return
+    (o1, l1, d1), (o2, l2, d2) = tbl
+    check("its two halves are consecutive", o1 + l1 == o2,
+          "0x%06X + %d = 0x%06X" % (o1, l1, o2))
+    check("they go to ITCM and SDRAM", d1 == 0 and d2 == 0x80000000,
+          "0x%08X and 0x%08X" % (d1, d2))
+
+    img = lv_font.Image(path)
+    fonts = lv_font.find(img)
+    check("the interface's fonts are found", len(fonts) >= 4,
+          "%d fonts" % len(fonts))
+    if fonts:
+        f = lv_font.Font(img, fonts[0])
+        check("a font's depth is measured, not guessed", f.bpp in (1, 2, 4, 8),
+              "%d bpp, %d glyphs, %d px tall" % (f.bpp, f.count - 1, f.height()))
+        # the first glyphs are the line feed and the space, both boxless
+        im, at = None, 0
+        for i in range(1, min(f.count, 40)):
+            im = f.render(i)
+            if im is not None:
+                at = i
+                break
+        check("its glyphs decode to a bitmap", im is not None and im.width > 0,
+              "glyph %d is %dx%d" % (at, im.width, im.height) if im else "nothing")
+
+    L = lv_layout.Layout(img=img)
+    check("the geometry setters identify themselves", L.pos != L.size,
+          "set_pos 0x%08X, set_size 0x%08X" % (L.pos, L.size))
+    reg = L.registry()
+    check("the screen registry reads", len(reg) >= 8, "%d screens" % len(reg))
+    total = sum(len(L.widgets(L.func_of(h[0]) or h[0])) for h in reg)
+    check("screens lay widgets out", total > 50, "%d widgets in all" % total)
+
+    done = False
+    for h in reg:
+        for r in L.widgets(L.func_of(h[0]) or h[0]):
+            at = r['size']['b_at']
+            off = img.off(at, 4)
+            old = thumb_imm.read_imm(bytes(img.body[off:off + 4]), 0)
+            if old is None or not 8 <= old[1] <= 200:
+                continue
+            want = old[1] + 1
+            try:
+                new = thumb_imm.encode_imm(img.body, off, want)
+            except ValueError:
+                continue
+            keep = bytes(img.body[off:off + len(new)])
+            img.body[off:off + len(new)] = new
+            back = thumb_imm.read_imm(bytes(img.body[off:off + 4]), 0)
+            img.body[off:off + len(keep)] = keep
+            check("a layout constant round trips",
+                  bool(back) and back[1] == want,
+                  "0x%08X: %d -> %d" % (at, old[1], back[1] if back else -1))
+            done = True
+            break
+        if done:
+            break
+    if not done:
+        check("a layout constant round trips", False, "no candidate found")
+
+
 def main(argv):
     if not argv:
         print(__doc__.strip())
@@ -273,6 +354,7 @@ def main(argv):
         test_index(body)
         test_gif(body)
         test_bulk_edits(path, body)
+        test_interface(path)
     test_packets()
     if len(argv) > 1:
         test_nam(argv[1])

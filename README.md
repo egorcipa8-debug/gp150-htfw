@@ -181,6 +181,12 @@ no network access of any kind.
   descriptor guard skips anything a write would run over. This is the tool for
   "make the interface blue" — a texture paints a picture over the artwork, this
   moves the artwork's own colours.
+- **Раскладка** — the pedal's own screens, as rectangles you can move. Every
+  widget's position and size is an immediate in the interface code
+  (`FINDINGS.md` §33), so this reads them out, draws the fifteen registered
+  screens on a 320x240 canvas, and writes the numbers back when you drag a box
+  or type a value. An edit that will not fit the instruction already there is
+  refused on its own and the rest still apply.
 - **Оптимизировать намы** — an A2 capture at a width the pedal can afford. Shows
   what each channel count would cost, measures what the three-channel submodel
   Suite ships actually loses against the eight-channel one, distils a four- or

@@ -57,6 +57,57 @@ SUITE_ASSETS = [
 FONT_DIR = os.path.join(HERE, 'fonts')
 
 
+LAYOUT = {'obj': None, 'stamp': None}
+
+
+def layout():
+    """The native screen layout, cached because the scan is not cheap.
+
+    Building it walks 384 KB of Thumb looking for calls with constant
+    arguments, which takes a second or two - too slow to redo on every request
+    and pointless to redo at all, since an edit changes a number in place and
+    not where that number lives. The addresses stay put; the values are re-read
+    on the way out.
+    """
+    import lv_font
+    import lv_layout
+    if LAYOUT['obj'] is None or LAYOUT['stamp'] is not id(PROJECT.body):
+        img = lv_font.Image(fw=PROJECT.fw, body=PROJECT.body)
+        LAYOUT['obj'] = lv_layout.Layout(img=img)
+        LAYOUT['stamp'] = id(PROJECT.body)
+    return LAYOUT['obj']
+
+
+def layout_value(L, addr):
+    """The constant as it stands right now, not as it stood when we scanned."""
+    import thumb_imm
+    o = L.img.off(addr, 4)
+    r = thumb_imm.read_imm(bytes(L.img.body[o:o + 4]), 0)
+    return None if r is None else r[1]
+
+
+def layout_screen(which):
+    L = layout()
+    reg = L.registry()
+    if which >= len(reg):
+        raise ValueError("there are only %d screens" % len(reg))
+    entry = L.func_of(reg[which][0]) or reg[which][0]
+    out = []
+    for k, r in enumerate(L.widgets(entry)):
+        item = {'i': k, 'w': layout_value(L, r['size']['a_at']),
+                'h': layout_value(L, r['size']['b_at']),
+                'w_at': r['size']['a_at'], 'h_at': r['size']['b_at'],
+                'x': 0, 'y': 0, 'x_at': None, 'y_at': None}
+        if r['pos']:
+            item['x'] = layout_value(L, r['pos']['a_at'])
+            item['y'] = layout_value(L, r['pos']['b_at'])
+            item['x_at'] = r['pos']['a_at']
+            item['y_at'] = r['pos']['b_at']
+        out.append(item)
+    return {'ok': True, 'screen': which, 'handler': entry,
+            'screens': len(reg), 'items': out}
+
+
 def sysfonts():
     """The pedal's own menu typefaces.
 
@@ -1558,6 +1609,18 @@ class Handler(BaseHTTPRequestHandler):
                 span = min(span, len(PROJECT.body) - off - 1024)
                 w = PROJECT.alpha_width(off, max(span, 24576))
                 return self._json({'off': off, 'width': w})
+            if u.path == '/api/layout':
+                L = layout()
+                reg = L.registry()
+                rows = []
+                for i, h in enumerate(reg):
+                    e = L.func_of(h[0]) or h[0]
+                    rows.append({'i': i, 'handler': e,
+                                 'widgets': len(L.widgets(e))})
+                return self._json({'ok': True, 'screens': rows,
+                                   'set_pos': L.pos, 'set_size': L.size})
+            if u.path == '/api/layout_screen':
+                return self._json(layout_screen(int(q.get('screen', ['0'])[0])))
             if u.path == '/api/sysfonts':
                 _img, items = sysfonts()
                 return self._json({'ok': True, 'items': items})
@@ -1828,6 +1891,26 @@ class Handler(BaseHTTPRequestHandler):
                     outline_color=_rgb(data.get('ocolor', '#000000')),
                     dy=int(data.get('dy', 0)))
                 return self._json({'ok': True, 'edits': PROJECT.edits})
+            if u.path == '/api/layout_set':
+                import thumb_imm
+                L = layout()
+                done, failed = 0, []
+                for e in data.get('edits', []):
+                    at, val = int(e['at']), int(e['value'])
+                    try:
+                        o = L.img.off(at, 4)
+                        new = thumb_imm.encode_imm(L.img.body, o, val)
+                        L.img.body[o:o + len(new)] = new
+                        back = thumb_imm.read_imm(bytes(L.img.body[o:o + 4]), 0)
+                        if back is None or back[1] != val:
+                            raise ValueError("did not round trip")
+                        done += 1
+                    except Exception as ex:               # noqa: BLE001
+                        failed.append({'at': at, 'value': val, 'why': str(ex)})
+                if done:
+                    PROJECT.edits += 1
+                return self._json({'ok': True, 'written': done,
+                                   'failed': failed, 'edits': PROJECT.edits})
             if u.path == '/api/sysfont_replace':
                 import lv_font
                 img, items = sysfonts()
