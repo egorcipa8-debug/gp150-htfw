@@ -110,6 +110,17 @@ class Layout(object):
         f = self.func_of(h)
         return f if f == h else h
 
+    def refresh(self):
+        """Re-read the code after an edit.
+
+        The scan works on a copy - it is walked thousands of times and slicing
+        a bytearray each pass would be silly - but that copy goes stale the
+        moment a constant is written, and everything downstream would keep
+        reporting the old number.
+        """
+        self.code = bytes(self.img.body[self.img.sd_off:
+                                        self.img.sd_off + CODE_LEN])
+
     def func_of(self, addr):
         import bisect
         i = bisect.bisect_right(self.funcs, addr)

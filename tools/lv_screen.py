@@ -39,6 +39,7 @@ import lv_layout
 import lv_trace
 
 SD = 0x80000000
+SCREEN_W, SCREEN_H = 320, 240
 
 
 class Screen(object):
@@ -245,10 +246,39 @@ class Screen(object):
             box[key] = (px + x, py + y, w, h)
             return box[key]
 
+        root = self.objs[0]['key'] if self.objs else None
+
+        def rooted(key, guard=0):
+            """Does this widget's parent chain actually reach the screen?
+
+            One whose parent could not be worked out has coordinates relative
+            to a container we never identified, so placing it against the
+            screen puts it somewhere it is not. Better to know which boxes are
+            trustworthy than to draw them all and be wrong about half.
+            """
+            while key is not None and guard < 16:
+                if key == root:
+                    return True
+                o = by.get(key)
+                if o is None or o['parent'] is None:
+                    return key == root
+                key = o['parent']
+                guard += 1
+            return False
+
         out = []
         for o in self.objs:
             x, y, _w, _h = solve(o['key'])
-            out.append(dict(o, ax=x, ay=y, depth=self._depth(by, o['key'])))
+            r = rooted(o['key'])
+            # a box the size of a house came from a pairing that was not a
+            # widget at all; say so rather than draw it over the screen
+            if r and (not 0 < (o['w'] or 0) <= 2 * SCREEN_W
+                      or not 0 < (o['h'] or 0) <= 2 * SCREEN_H
+                      or not -SCREEN_W <= x <= 2 * SCREEN_W
+                      or not -SCREEN_H <= y <= 2 * SCREEN_H):
+                r = False
+            out.append(dict(o, ax=x, ay=y, depth=self._depth(by, o['key']),
+                            rooted=r))
         return out
 
     @staticmethod
@@ -333,14 +363,14 @@ def render(sc, scale=2, font=None):
     for o in boxes:
         w = o['w'] if o['w'] is not None else 0
         h = o['h'] if o['h'] is not None else 0
-        if w <= 0 or h <= 0:
+        if w <= 0 or h <= 0 or not o['rooted']:
             continue
         x, y = o['ax'], o['ay']
         dr.rectangle([x, y, x + w - 1, y + h - 1],
                      fill=PANEL[min(o['depth'], len(PANEL) - 1)],
                      outline=(70, 78, 94))
     for o in boxes:
-        if not o['img']:
+        if not o['img'] or not o['rooted']:
             continue
         b = sc.images.get(o['img'])
         if b is None:

@@ -249,6 +249,7 @@ dialog::backdrop{background:#0009}
         <label class="meta"><input type="file" id="lyphoto" accept="image/*"
                style="width:150px" onchange="lyUpload()"> фото экрана</label>
         <label class="meta"><input type="checkbox" id="lyreal" onchange="lyDraw()"> набросок с картинками</label>
+        <label class="meta"><input type="checkbox" id="lyfloat" onchange="lyDraw()"> и неприкреплённые</label>
         <label class="meta"><input type="checkbox" id="lygrid" onchange="lyDraw()"> сетка</label>
         <div class="spacer"></div>
         <button class="primary" id="lyapply" onclick="lyApply()" disabled>Записать в прошивку</button>
@@ -263,6 +264,10 @@ dialog::backdrop{background:#0009}
         те самые константы на месте.<br>
         Число обязано влезть в ту же инструкцию, что стоит сейчас: если не
         влезает, эта правка честно откажется, а остальные применятся.<br>
+        <b>Пунктиром</b> показаны виджеты, у которых не удалось определить
+        родителя: их координаты отсчитываются от контейнера, который разбор не
+        нашёл, поэтому где они на самом деле — неизвестно. По умолчанию они
+        скрыты; размеры у них верные, положение нет.<br>
         <b>Фото экрана.</b> Сними экран педали телефоном, загрузи сюда — оно ляжет
         под прямоугольники, и четырьмя ползунками подгоняешь края дисплея под
         холст. Это самый честный фон: настоящий экран, а не реконструкция.<br>
@@ -1374,7 +1379,7 @@ async function lyInit(){
     o.value = x.i;
     o.textContent = (x.id === null ? 'экран ' + x.i
                                    : '0x' + x.id.toString(16).toUpperCase().padStart(2,'0')) +
-      (x.name ? ' — ' + x.name : '') + ' · ' + x.widgets + ' элем.';
+      (x.name ? ' — ' + x.name : '') + ' · ' + x.anchored + ' из ' + x.widgets + ' на месте';
     sel.appendChild(o);
   });
   // an empty screen looks like a broken tab, so open on the busiest one
@@ -1470,15 +1475,18 @@ function lyDraw(){
     c.appendChild(g);
   }
   LY.items.forEach((it, i) => {
+    if(!it.rooted && !$('#lyfloat').checked) return;
     const el = document.createElement('div');
-    const hue = (i * 47) % 360;
+    const hue = it.rooted ? (i * 47) % 360 : 0;
     el.style.cssText =
-      'position:absolute;left:' + (it.x * LYS) + 'px;top:' + (it.y * LYS) + 'px;' +
+      'position:absolute;left:' + (it.ax * LYS) + 'px;top:' + (it.ay * LYS) + 'px;' +
       'width:' + (it.w * LYS) + 'px;height:' + (it.h * LYS) + 'px;box-sizing:border-box;' +
-      'border:' + (i === LY.sel ? 2 : 1) + 'px solid hsl(' + hue + ' 80% 65%);cursor:move;' +
+      'border:' + (i === LY.sel ? 2 : 1) + 'px ' + (it.rooted ? 'solid' : 'dashed') +
+      ' hsl(' + hue + ' 80% 65%);cursor:move;' +
       'background:hsl(' + hue + ' 80% 55% / ' +
         (i === LY.sel ? 0.28 : (backdrop ? 0.05 : 0.16)) + ')';
-    el.title = i + ': ' + it.w + '×' + it.h + ' @ ' + it.x + ',' + it.y;
+    el.title = i + ': ' + it.w + '×' + it.h + ' @ ' + it.ax + ',' + it.ay +
+      (it.rooted ? '' : '  (родитель не определён — положение неизвестно)');
     const tag = document.createElement('div');
     tag.textContent = i;
     tag.style.cssText = 'position:absolute;left:2px;top:0;font-size:10px;' +
@@ -1509,11 +1517,17 @@ function lyDrag(e, i, resize){
   const it = LY.items[i];
   const x0 = e.clientX, y0 = e.clientY;
   const ox = it.x, oy = it.y, ow = it.w, oh = it.h;
+  const oax = it.ax, oay = it.ay;
   function move(ev){
     const dx = Math.round((ev.clientX - x0) / LYS);
     const dy = Math.round((ev.clientY - y0) / LYS);
     if(resize){ it.w = Math.max(1, ow + dx); it.h = Math.max(1, oh + dy); }
-    else { it.x = Math.max(0, ox + dx); it.y = Math.max(0, oy + dy); }
+    else {
+      // the box is drawn where it lands, but the number that changes is the
+      // one relative to its parent, so move both by the same amount
+      it.x = Math.max(0, ox + dx); it.y = Math.max(0, oy + dy);
+      it.ax = oax + (it.x - ox); it.ay = oay + (it.y - oy);
+    }
     lyMark(i); lyDraw();
   }
   function up(){
@@ -1560,7 +1574,7 @@ function lyList(){
   $('#lylist').innerHTML = LY.items.map((r, i) =>
     '<div style="padding:2px 0;cursor:pointer;' + (i === LY.sel ? 'color:#8fd' : '') +
     '" onclick="LY.sel=' + i + ';lyDraw()">' + i + ': ' + r.w + '×' + r.h +
-    ' @ ' + r.x + ',' + r.y + '</div>').join('');
+    ' @ ' + r.ax + ',' + r.ay + (r.rooted ? '' : '  ?') + '</div>').join('');
 }
 
 async function lyApply(){

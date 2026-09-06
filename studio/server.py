@@ -159,24 +159,37 @@ def layout_value(L, addr):
 
 
 def layout_screen(which):
+    """One screen's widgets, as the tree rather than as a flat list.
+
+    The flat pairing in `lv_layout` finds every set_pos/set_size pair in a
+    handler, which is more boxes than the screen has and says nothing about
+    where they sit. The tree says which widget is inside which, so a box can be
+    drawn where it actually is - and, just as usefully, says when it cannot:
+    a widget whose parent was never worked out has coordinates relative to a
+    container we never found, and `rooted` is false for it.
+
+    Both coordinates come back. `x`/`y` are what the instructions hold and what
+    an edit changes; `ax`/`ay` are where that lands on the screen.
+    """
+    sc = screen_of(which)
     L = layout()
     reg = L.registry()
-    if which >= len(reg):
-        raise ValueError("there are only %d screens" % len(reg))
-    entry = L.entry(which)
     out = []
-    for k, r in enumerate(L.widgets(entry)):
-        item = {'i': k, 'w': layout_value(L, r['size']['a_at']),
-                'h': layout_value(L, r['size']['b_at']),
-                'w_at': r['size']['a_at'], 'h_at': r['size']['b_at'],
-                'x': 0, 'y': 0, 'x_at': None, 'y_at': None}
-        if r['pos']:
-            item['x'] = layout_value(L, r['pos']['a_at'])
-            item['y'] = layout_value(L, r['pos']['b_at'])
-            item['x_at'] = r['pos']['a_at']
-            item['y_at'] = r['pos']['b_at']
-        out.append(item)
-    return {'ok': True, 'screen': which, 'handler': entry,
+    for k, o in enumerate(sc.place()):
+        if not o['w'] or not o['h']:
+            continue
+        # a pairing that was never a widget can produce a size in the
+        # thousands; it is not one, and it has no business in the list
+        if o['w'] > 2 * 320 or o['h'] > 2 * 240:
+            continue
+        out.append({'i': len(out), 'x': o['x'], 'y': o['y'],
+                    'ax': o['ax'], 'ay': o['ay'],
+                    'w': o['w'], 'h': o['h'],
+                    'x_at': o['x_at'], 'y_at': o['y_at'],
+                    'w_at': o['w_at'], 'h_at': o['h_at'],
+                    'rooted': bool(o['rooted']), 'depth': o['depth'],
+                    'img': bool(o['img']), 'text': o['text']})
+    return {'ok': True, 'screen': which, 'handler': sc.entry,
             'screens': len(reg), 'items': out}
 
 
@@ -1695,11 +1708,13 @@ class Handler(BaseHTTPRequestHandler):
                 ids = L.ids()
                 rows = []
                 for i, h in enumerate(reg):
-                    e = L.entry(i)
                     sid = ids[i] if i < len(ids) else None
-                    rows.append({'i': i, 'handler': e, 'id': sid,
+                    items = layout_screen(i)['items']
+                    rows.append({'i': i, 'handler': L.entry(i), 'id': sid,
                                  'name': SCREEN_NAMES.get(sid, ''),
-                                 'widgets': len(L.widgets(e))})
+                                 'widgets': len(items),
+                                 'anchored': sum(1 for x in items
+                                                 if x['rooted'])})
                 return self._json({'ok': True, 'screens': rows,
                                    'set_pos': L.pos, 'set_size': L.size})
             if u.path == '/api/layout_screen':
@@ -2043,6 +2058,7 @@ class Handler(BaseHTTPRequestHandler):
                         failed.append({'at': at, 'value': val, 'why': str(ex)})
                 if done:
                     PROJECT.edits += 1
+                    L.refresh()                 # the scan works on a copy
                 return self._json({'ok': True, 'written': done,
                                    'failed': failed, 'edits': PROJECT.edits})
             if u.path == '/api/sysfont_replace':

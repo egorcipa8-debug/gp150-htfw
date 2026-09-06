@@ -1754,3 +1754,48 @@ So the preview is a **structural sketch** and is labelled as one in Studio,
 off by default. A true picture of a screen needs the device: patch the boot to
 enter screen *N*, flash, photograph - the method the GP-200 project used - at
 the cost of a flash cycle per screen.
+
+## 36. The layout, checked against the pedal
+
+Twenty photographs of the real screens settle what static reading could only
+claim. `tools/screen_photo.py` finds the display in each - the largest bright
+region, then the box stretched to the screen's own 4:3, because the dark bands
+inside the interface break the lit area into pieces and a run-of-bright-rows
+test collapsed to a sliver on half of them - and Studio keeps one per screen
+under the editable boxes.
+
+Laying the extracted geometry over the photograph of the home screen:
+
+* the top strip sits on the thin band above the header;
+* the header band's lower edge lands exactly on the line under
+  `104  It's GP-150`;
+* the footer band's upper edge lands exactly on the top of the
+  `P-VOL | BPM | NAM MODE` panel - `y = 185` read from the code against about
+  182 measured off the photograph, inside the error of a hand-held crop;
+* the 195x87 panel covers the patch tiles.
+
+So the numbers the Layout tab edits are the device's own. That is worth having
+said out loud, because the rest of this section is about what is *not*.
+
+**Ten of forty-four.** Only ten of the home screen's boxes have a parent chain
+that reaches the screen. The other thirty-four are built by helpers whose
+parent could not be worked out, so their coordinates are relative to a
+container nobody identified - their *sizes* are right and their *positions* are
+unknown. They are drawn dashed and hidden by default rather than placed
+somewhere plausible and wrong. The settings screen anchors five of fourteen;
+the tuner, whose widgets are all built two levels down, anchors none.
+
+Two bugs came out of the checking, both the kind that only a real comparison
+finds:
+
+* `Layout` keeps a snapshot of the code because the scan walks it thousands of
+  times, and nothing refreshed that snapshot after an edit - so a write
+  succeeded, reported success, and read back the old number. It refreshes now.
+* a pairing that was never a widget produced a box 8292 pixels square at
+  minus four thousand, and it was being drawn. Sizes beyond twice the screen
+  are dropped.
+
+The editor reads the tree now rather than the flat pairing, so a box is drawn
+where it lands and the number an edit changes is still the parent-relative one
+the instruction holds. Both come back from the API: `x`/`y` are what is
+written, `ax`/`ay` are where it shows.
