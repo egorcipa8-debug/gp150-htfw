@@ -23,7 +23,8 @@ names.
 
 import struct
 
-__all__ = ['calls', 'writes', 'expand_imm', 'read_imm', 'encode_imm']
+__all__ = ['calls', 'writes', 'wide_writes', 'expand_imm', 'read_imm',
+           'encode_imm']
 
 
 def _u16(b, i):
@@ -191,6 +192,28 @@ def writes(w):
     return 'all'
 
 
+def wide_writes(w, w2):
+    """Which register a 32-bit Thumb-2 instruction clobbers.
+
+    Clearing every register at each 32-bit instruction is safe but throws away
+    the thing worth knowing: a builder parks a widget handle in r8..r11 and
+    picks it up again several instructions later. Decoding the destination of
+    the four common shapes keeps those alive without ever keeping a value that
+    was actually overwritten - anything unrecognised still returns `'all'`.
+    """
+    if (w & 0xFE00) == 0xE800 or (w & 0xFE00) == 0xEA00 and (w & 0x0100):
+        return 'all'                      # load/store multiple, LDRD, and kin
+    if (w & 0xEE00) == 0xEA00:            # data processing, register
+        return (w2 >> 8) & 0xF
+    if (w & 0xF800) == 0xF000:
+        if w2 & 0x8000:
+            return 'all'                  # a wide branch
+        return (w2 >> 8) & 0xF            # data processing, modified immediate
+    if (w & 0xFE00) == 0xF800:            # single load or store
+        return (w2 >> 12) & 0xF
+    return 'all'
+
+
 def calls(code, base):
     """Every BL, with whatever constants were in r0-r3 when it was reached.
 
@@ -223,7 +246,11 @@ def calls(code, base):
             i += 4
             continue
         if (w & 0xF800) in (0xE800, 0xF000, 0xF800):
-            regs.clear()                 # a 32-bit instruction we do not model
+            hit = wide_writes(w, _u16(code, i + 2))
+            if hit == 'all':
+                regs.clear()
+            else:
+                regs.pop(hit, None)
             i += 4
             continue
         hit = writes(w)

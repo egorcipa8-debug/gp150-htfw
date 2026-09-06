@@ -1631,3 +1631,43 @@ drag to move, drag the corner to resize, or type the numbers - and writes the
 constants back. Positions in LVGL are relative to a widget's parent, so the
 canvas is a schematic and not a render of the screen; that is said on the tab
 rather than glossed over.
+
+## 34. The descriptor comes after its image, not before
+
+Every image in the payload has a 12-byte record beside it, and §17 read that
+record as a header sitting in front of the pixels. It sits behind them. The
+index has therefore been pairing each descriptor with the **next** image's
+pixels since the day it was written, and that is where the noise came from.
+
+**The descriptors say so themselves.** The third word is a pointer, and mapped
+back through the load table it lands, on **124 of the 132 blocks** in V1.1.1,
+at exactly `hdr - size` - the bytes immediately *before* the record. The other
+eight point outside the SDRAM block altogether. Not one lands at `hdr + 12`,
+which is where the index was reading.
+
+```
+hdr 0x090A55  14x26  size 1092   its pointer -> 0x090611   hdr-size = 0x090611
+hdr 0x090EA5  14x26  size 1092                -> 0x090A61   hdr-size = 0x090A61
+hdr 0x091C3D  34x34  size 3468                -> 0x090EB1   hdr-size = 0x090EB1
+```
+
+So the layout is `[pixels][descriptor][pixels][descriptor]`, and reading
+forwards shifts every image by one place in the run.
+
+**Why it went unnoticed for so long.** The artwork is stored in pairs - a grey
+icon and a coloured one, the same size - so an off-by-one inside a pair swaps
+two pictures that look interchangeable and keeps the geometry. It only shows
+when consecutive blocks differ in size, and then it shows as static. Rendering
+fourteen blocks both ways settles it in one look: read backwards they are a
+battery, two amp icons, a lightning bolt, two drum icons, a cassette, a
+document, a face, two arrows, a pedal and a drum kit; read forwards half of
+them are noise.
+
+**What it fixes.** Grading the same image both ways: 125 of 132 blocks come
+back as artwork now, against a much thinner majority before, and the "doubtful"
+pile that Studio hides behind a toggle largely evaporates. This is the noise
+the Graphics tab has been apologising for since §16.
+
+`Blob.off` is `hdr - size` now and `Blob.end` is `hdr`; the scan requires room
+*before* a candidate rather than after it. The descriptor guard is unchanged -
+it protects `[hdr, hdr + 12)`, which was always right.

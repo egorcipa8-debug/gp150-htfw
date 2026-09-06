@@ -8,7 +8,8 @@ Several things here are, as far as we can tell, not published anywhere else:
 - **the region checksum algorithm** — CRC-16/MODBUS, stored big-endian;
 - **the payload packing** — LZO1X with a 4-byte length prefix, which is what makes
   GP-150 **V1.1.1 and later editable at all**;
-- **the image descriptors** — a 12-byte header before every stored image, carrying
+- **the image descriptors** — a 12-byte record that follows every stored image
+  (`FINDINGS.md` §34; it was read as preceding one for a long time), carrying
   its width and height, so the artwork does not have to be found by guessing at
   row strides. It also settles the pixel order, which these notes had backwards;
 - **the NAM path** — the pedal reads `.namb`, not `.nam`, and its magic is in the

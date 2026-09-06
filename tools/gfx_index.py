@@ -56,8 +56,14 @@ class Blob(object):
     __slots__ = ('hdr', 'off', 'w', 'h', 'size', 'addr', 'fmt')
 
     def __init__(self, hdr, w, h, size, addr, fmt):
+        # The descriptor comes *after* the pixels it describes, not before.
+        # Its own `addr` field says so: on 124 of the 132 blocks in V1.1.1 it
+        # resolves to exactly `hdr - size`, and the eight that do not point
+        # outside the block altogether. Reading the data forwards from the
+        # header pairs every descriptor with the *next* image's pixels, which
+        # is why so much of the index used to come back as noise.
         self.hdr = hdr                            # descriptor offset
-        self.off = hdr + HDR                      # first pixel
+        self.off = max(0, hdr - size)             # first pixel
         self.w = w
         self.h = h
         self.size = size
@@ -66,7 +72,7 @@ class Blob(object):
 
     @property
     def end(self):
-        return self.off + self.size
+        return self.hdr                           # the pixels stop where it does
 
     def as_dict(self):
         return {'hdr': self.hdr, 'off': self.off, 'w': self.w, 'h': self.h,
@@ -114,7 +120,7 @@ def scan(payload):
         ok &= (addr >= 0x80000000) & (addr < 0x82000000)
         for p in _np.nonzero(ok)[0]:
             p = int(p)
-            if p + HDR + int(size[p]) <= n:
+            if p >= int(size[p]):
                 out.append(Blob(p, int(w[p]), int(h[p]), int(size[p]),
                                 int(addr[p]), FMT_RGB565A))
         return out
@@ -122,7 +128,7 @@ def scan(payload):
     while p >= 0:
         if p + HDR <= n:
             desc, size, addr = struct.unpack_from('<III', buf, p)
-            wh = _valid(desc, size, addr, n - p - HDR)
+            wh = _valid(desc, size, addr, p)
             if wh:
                 out.append(Blob(p, wh[0], wh[1], size, addr, FMT_RGB565A))
         p = buf.find(b'\x05', p + 1)
