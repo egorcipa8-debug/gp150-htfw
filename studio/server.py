@@ -93,6 +93,26 @@ SCREEN_NAMES = {
 }
 
 
+SCREENS = {'stamp': None, 'roles': None, 'images': None}
+
+
+def screen_of(which):
+    """One screen as the pedal assembles it: a tree, with its pictures.
+
+    The roles - which call constructs a widget, which sets a picture, which
+    aligns one - are worked out once across all fifteen screens and reused, so
+    a screen that delegates everything to helpers still gets read properly.
+    """
+    import lv_screen
+    L = layout()
+    if SCREENS['stamp'] != PROJECT.generation:
+        SCREENS['images'] = lv_screen.index_images(L.img)
+        SCREENS['roles'] = lv_screen.discover(L, SCREENS['images'])
+        SCREENS['stamp'] = PROJECT.generation
+    return lv_screen.Screen(L, which, SCREENS['images'],
+                            roles=SCREENS['roles'])
+
+
 def layout_value(L, addr):
     """The constant as it stands right now, not as it stood when we scanned."""
     import thumb_imm
@@ -1647,6 +1667,23 @@ class Handler(BaseHTTPRequestHandler):
                                    'set_pos': L.pos, 'set_size': L.size})
             if u.path == '/api/layout_screen':
                 return self._json(layout_screen(int(q.get('screen', ['0'])[0])))
+            if u.path == '/api/screen_render':
+                import lv_font
+                import lv_screen
+                which = int(q.get('screen', ['0'])[0])
+                scale = max(1, min(4, int(q.get('scale', ['2'])[0])))
+                sc = screen_of(which)
+                fimg = lv_font.Image(fw=PROJECT.fw, body=PROJECT.body)
+                f = None
+                for d in lv_font.find(fimg):
+                    cand = lv_font.Font(fimg, d)
+                    if 12 <= cand.height() <= 18 and cand.n_ascii:
+                        f = cand
+                        break
+                im = lv_screen.render(sc, scale, f)
+                buf = io.BytesIO()
+                im.save(buf, 'PNG')
+                return self._send(200, buf.getvalue(), 'image/png')
             if u.path == '/api/sysfonts':
                 _img, items = sysfonts()
                 return self._json({'ok': True, 'items': items})

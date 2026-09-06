@@ -44,18 +44,51 @@ SD = 0x80000000
 class Screen(object):
     """One screen, as a tree of widgets with their contents."""
 
-    def __init__(self, L, which, images=None):
+    def __init__(self, L, which, images=None, depth=2, roles=None):
         self.L = L
         self.img = L.img
         self.which = which
         self.images = images if images is not None else index_images(L.img)
         self.entry = L.entry(which)
-        i = bisect.bisect_right(L.funcs, self.entry)
-        self.end = L.funcs[i] if i < len(L.funcs) else self.entry + 0x4000
+        self.end = self._end(self.entry)
         self.calls = lv_trace.trace(L.code, SD, self.entry, self.end)
-        self.create = self._create()
-        self.set_img = self._img_setter()
+        # A screen whose handler delegates everything has no create call of
+        # its own to learn from, so the roles are worked out once across all
+        # fifteen and handed in.
+        if roles:
+            self.create, self.set_img, self.align = roles
+        else:
+            self.create, self.set_img = self._create(), self._img_setter()
+            self.align = None
+        self.depth = depth
         self.objs = self._build()
+
+    def _end(self, entry):
+        i = bisect.bisect_right(self.L.funcs, entry)
+        return (self.L.funcs[i] if i < len(self.L.funcs)
+                else entry + 0x4000)
+
+    def _builds_widgets(self, target):
+        """Does this function put widgets on the screen itself?
+
+        A screen handler hands most of its work to helpers - a row, a tile, a
+        meter - and those helpers are where the pictures and the captions are.
+        A helper is recognised the only way that is safe: by whether its own
+        body calls the constructor or the geometry setters.
+        """
+        if not (SD <= target < SD + len(self.L.code)):
+            return None
+        if target in (self.create, self.L.pos, self.L.size, self.set_img):
+            return None
+        cached = self._sub.get(target)
+        if cached is not None:
+            return cached or None
+        cs = lv_trace.trace(self.L.code, SD, target, self._end(target))
+        keep = [c for c in cs
+                if c['target'] in (self.create, self.L.pos, self.L.size,
+                                   self.set_img)]
+        self._sub[target] = cs if keep else []
+        return cs if keep else None
 
     # -- who does what ---------------------------------------------------
     def _create(self):
@@ -77,6 +110,7 @@ class Screen(object):
 
     # -- the tree --------------------------------------------------------
     def _build(self):
+        self._sub = {}
         objs = {}
         order = []
 
@@ -84,65 +118,120 @@ class Screen(object):
             if key not in objs:
                 objs[key] = {'key': key, 'parent': None, 'x': 0, 'y': 0,
                              'w': None, 'h': None, 'img': None, 'text': None,
+                             'align': None, 'ax_off': 0, 'ay_off': 0,
                              'x_at': None, 'y_at': None, 'w_at': None,
                              'h_at': None}
                 order.append(key)
             return objs[key]
 
+        self._walk(self.calls, objs, order, get, tag=(), parent=None,
+                   left=self.depth)
+        return [objs[k] for k in order]
+
+    def _walk(self, calls, objs, order, get, tag, parent, left):
+        """Read one function's calls into the tree, following its helpers.
+
+        `tag` keeps two invocations of the same helper apart - without it the
+        second row of a list would land on top of the first, because both use
+        the same registers and the same struct slots.
+        """
+        def name(v):
+            k = v.key() if v is not None else None
+            return (tag + k) if k is not None else None
+
         ret_slot = {}
-        for c in self.calls:
-            if c['target'] == self.create and c['stored']:
-                key = ('slot',) + c['stored']
+        for c in calls:
+            if c['target'] == self.create:
+                key = tag + (('slot',) + c['stored']) if c['stored'] \
+                    else tag + ('ret', c['ret'].v)
                 ret_slot[c['ret'].v] = key
                 o = get(key)
                 p = c['args'].get(0)
-                o['parent'] = p.key() if p is not None else None
+                o['parent'] = name(p) if p is not None else parent
+                if o['parent'] not in objs:
+                    o['parent'] = parent
 
-        for c in self.calls:
+        for c in calls:
             who = c['args'].get(0)
-            if who is None:
-                continue
-            key = who.key()
-            if key is not None and key[0] == 'ret':
-                key = ret_slot.get(key[1], key)
-            if key is None:
-                continue
-            # a widget built by a helper never passes through a create call we
-            # can see, but it still gets its geometry set here - so give it an
-            # entry rather than dropping it, with no parent we can name
-            o = get(key)
+            key = name(who)
+            if key is not None and key[1] == 'ret':
+                key = ret_slot.get(who.v, key)
             a, b = c['args'].get(1), c['args'].get(2)
-            if c['target'] == self.L.pos and a is not None and b is not None \
-                    and a.kind == 'imm' and b.kind == 'imm':
-                o['x'], o['y'] = a.v, b.v
-                o['x_at'], o['y_at'] = a.at, b.at
-            elif c['target'] == self.L.size and a is not None and b is not None \
-                    and a.kind == 'imm' and b.kind == 'imm':
-                o['w'], o['h'] = a.v, b.v
-                o['w_at'], o['h_at'] = a.at, b.at
-            elif c['target'] == self.set_img and a is not None \
-                    and a.kind == 'lit' and a.v in self.images:
-                o['img'] = a.v
-            elif a is not None and a.kind == 'lit':
-                s = text_at(self.img, a.v)
-                if s and s != '%s':
-                    o['text'] = s
-        return [objs[k] for k in order]
+            if key is not None:
+                o = get(key)
+                if o['parent'] is None and key != parent:
+                    o['parent'] = parent
+                if c['target'] == self.L.pos and a is not None and b is not None \
+                        and a.kind == 'imm' and b.kind == 'imm':
+                    o['x'], o['y'] = a.v, b.v
+                    o['x_at'], o['y_at'] = a.at, b.at
+                    continue
+                if c['target'] == self.L.size and a is not None and b is not None \
+                        and a.kind == 'imm' and b.kind == 'imm':
+                    o['w'], o['h'] = a.v, b.v
+                    o['w_at'], o['h_at'] = a.at, b.at
+                    continue
+                if c['target'] == self.set_img and a is not None \
+                        and a.kind == 'lit' and a.v in self.images:
+                    o['img'] = a.v
+                    pic = self.images[a.v]
+                    if o['w'] is None:
+                        # an image with no size of its own takes the picture's
+                        o['w'], o['h'] = pic.w, pic.h
+                    continue
+                if c['target'] == self.align and a is not None \
+                        and a.kind == 'imm' and a.v in ALIGN:
+                    o['align'] = a.v
+                    d = c['args'].get(3)
+                    o['ax_off'] = b.v if b is not None and b.kind == 'imm' else 0
+                    o['ay_off'] = d.v if d is not None and d.kind == 'imm' else 0
+                    continue
+                if a is not None and a.kind == 'lit':
+                    t = text_at(self.img, a.v)
+                    if t and t != '%s':
+                        o['text'] = t
+                        continue
+            if left > 0:
+                sub = self._builds_widgets(c['target'])
+                if sub:
+                    self._walk(sub, objs, order, get,
+                               tag + ('@%X' % c['at'],),
+                               key if key in objs else parent, left - 1)
 
     def place(self):
-        """Absolute boxes, by composing each widget onto its parent."""
+        """Absolute boxes, by composing each widget onto its parent.
+
+        A widget is put either at a position of its own or against one of its
+        parent's edges, and LVGL's aligned form is the commoner of the two, so
+        both are resolved here - the aligned ones need the parent's box, which
+        is why this walks the tree from the top rather than each widget alone.
+        """
         by = {o['key']: o for o in self.objs}
+        box = {}
+
+        def solve(key, guard=0):
+            if key in box:
+                return box[key]
+            o = by.get(key)
+            if o is None or guard > 16:
+                return (0, 0, 320, 240)
+            w = o['w'] if o['w'] else 0
+            h = o['h'] if o['h'] else 0
+            px, py, pw, ph = (solve(o['parent'], guard + 1)
+                              if o['parent'] in by else (0, 0, 320, 240))
+            if o['align'] in ALIGN:
+                hx, hy = ALIGN[o['align']]
+                x = {'l': 0, 'c': (pw - w) // 2, 'r': pw - w}[hx] + o['ax_off']
+                y = {'t': 0, 'c': (ph - h) // 2, 'b': ph - h}[hy] + o['ay_off']
+            else:
+                x, y = o['x'], o['y']
+            box[key] = (px + x, py + y, w, h)
+            return box[key]
+
         out = []
         for o in self.objs:
-            x, y = o['x'], o['y']
-            p, guard = o['parent'], 0
-            while p in by and guard < 16:
-                x += by[p]['x']
-                y += by[p]['y']
-                p = by[p]['parent']
-                guard += 1
-            out.append(dict(o, ax=x, ay=y,
-                            depth=self._depth(by, o['key'])))
+            x, y, _w, _h = solve(o['key'])
+            out.append(dict(o, ax=x, ay=y, depth=self._depth(by, o['key'])))
         return out
 
     @staticmethod
@@ -153,6 +242,38 @@ class Screen(object):
             d += 1
             guard += 1
         return d
+
+
+# LVGL's alignments, in its own order. Only the nine inside a parent are used
+# here; the OUT_* ones place a widget beside its parent and do not appear.
+ALIGN = {1: ('l', 't'), 2: ('c', 't'), 3: ('r', 't'),
+         4: ('l', 'b'), 5: ('c', 'b'), 6: ('r', 'b'),
+         7: ('l', 'c'), 8: ('r', 'c'), 9: ('c', 'c')}
+
+
+def discover(L, images):
+    """The constructor, the picture setter and the align call, agreed across
+    every screen - each found by what it is handed rather than by address."""
+    made, imgs, alg = {}, {}, {}
+    for k in range(len(L.registry())):
+        entry = L.entry(k)
+        i = bisect.bisect_right(L.funcs, entry)
+        end = L.funcs[i] if i < len(L.funcs) else entry + 0x4000
+        for c in lv_trace.trace(L.code, SD, entry, end):
+            if c['stored']:
+                made[c['target']] = made.get(c['target'], 0) + 1
+            v = c['args'].get(1)
+            if v is not None and v.kind == 'lit' and v.v in images:
+                imgs[c['target']] = imgs.get(c['target'], 0) + 1
+            a1, a2, a3 = (c['args'].get(1), c['args'].get(2),
+                          c['args'].get(3))
+            if (a1 is not None and a2 is not None and a3 is not None
+                    and a1.kind == 'imm' and a2.kind == 'imm'
+                    and a3.kind == 'imm' and a1.v in ALIGN):
+                alg[c['target']] = alg.get(c['target'], 0) + 1
+    return (max(made, key=made.get) if made else None,
+            max(imgs, key=imgs.get) if imgs else None,
+            max(alg, key=alg.get) if alg else None)
 
 
 def index_images(img):
@@ -252,11 +373,12 @@ def open_image(path):
 def cmd_list(path):
     img, L = open_image(path)
     imgs = index_images(img)
+    roles = discover(L, imgs)
     ids = L.ids()
     print("%-4s %-6s %-9s %-9s %-8s %s"
           % ("#", "id", "widgets", "pictures", "labels", "create / set_img"))
     for k in range(len(L.registry())):
-        sc = Screen(L, k, imgs)
+        sc = Screen(L, k, imgs, roles=roles)
         pics = sum(1 for o in sc.objs if o['img'])
         txt = sum(1 for o in sc.objs if o['text'])
         print("%-4d %-6s %-9d %-9d %-8d %s / %s"
@@ -268,7 +390,8 @@ def cmd_list(path):
 
 def cmd_draw(path, which, out, scale=2):
     img, L = open_image(path)
-    sc = Screen(L, which)
+    imgs = index_images(img)
+    sc = Screen(L, which, imgs, roles=discover(L, imgs))
     fonts = lv_font.find(img)
     f = None
     for d in fonts:

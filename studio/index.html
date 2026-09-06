@@ -246,7 +246,8 @@ dialog::backdrop{background:#0009}
         <b class="meta">Экран</b>
         <select id="lyscr" style="min-width:220px" onchange="lyLoad()"></select>
         <button onclick="lyInit()">Перечитать</button>
-        <label class="meta"><input type="checkbox" id="lygrid" checked onchange="lyDraw()"> сетка</label>
+        <label class="meta"><input type="checkbox" id="lyreal" checked onchange="lyDraw()"> как на экране</label>
+        <label class="meta"><input type="checkbox" id="lygrid" onchange="lyDraw()"> сетка</label>
         <div class="spacer"></div>
         <button class="primary" id="lyapply" onclick="lyApply()" disabled>Записать в прошивку</button>
         <button onclick="lyReset()">Сбросить правки</button>
@@ -1339,7 +1340,7 @@ async function applyText(){
    moving a box here is a change to those numbers and nothing else. */
 
 const LYS = 2;                     /* the canvas is the 320x240 screen at 2x */
-let LY = {screens: [], items: [], sel: -1, dirty: {}};
+let LY = {screens: [], items: [], sel: -1, dirty: {}, stamp: 0};
 
 async function lyInit(){
   let d;
@@ -1374,7 +1375,7 @@ async function lyInit(){
 async function lyLoad(){
   const i = +$('#lyscr').value || 0;
   const d = await api('/api/layout_screen?screen=' + i);
-  LY.items = d.items; LY.sel = -1; LY.dirty = {};
+  LY.items = d.items; LY.sel = -1; LY.dirty = {}; LY.stamp = Date.now();
   $('#lyapply').disabled = true; $('#lystate').textContent = '';
   lyDraw();
 }
@@ -1382,6 +1383,14 @@ async function lyLoad(){
 function lyDraw(){
   const c = $('#lycanvas');
   c.innerHTML = '';
+  // the screen as the pedal draws it, with the editable boxes over the top
+  if($('#lyreal').checked){
+    const bg = document.createElement('img');
+    bg.src = '/api/screen_render?screen=' + (+$('#lyscr').value||0) +
+             '&scale=' + LYS + '&t=' + LY.stamp;
+    bg.style.cssText = 'position:absolute;left:0;top:0;image-rendering:pixelated';
+    c.appendChild(bg);
+  }
   if($('#lygrid').checked){
     const g = document.createElement('div');
     g.style.position = 'absolute'; g.style.inset = '0';
@@ -1399,7 +1408,8 @@ function lyDraw(){
       'position:absolute;left:' + (it.x * LYS) + 'px;top:' + (it.y * LYS) + 'px;' +
       'width:' + (it.w * LYS) + 'px;height:' + (it.h * LYS) + 'px;box-sizing:border-box;' +
       'border:' + (i === LY.sel ? 2 : 1) + 'px solid hsl(' + hue + ' 80% 65%);cursor:move;' +
-      'background:hsl(' + hue + ' 80% 55% / ' + (i === LY.sel ? 0.30 : 0.14) + ')';
+      'background:hsl(' + hue + ' 80% 55% / ' +
+        (i === LY.sel ? 0.30 : ($('#lyreal').checked ? 0.0 : 0.14)) + ')';
     el.title = i + ': ' + it.w + '×' + it.h + ' @ ' + it.x + ',' + it.y;
     const tag = document.createElement('div');
     tag.textContent = i;
@@ -1495,6 +1505,7 @@ async function lyApply(){
       (d.failed.length ? ', ' + d.failed.length + ' не влезли: ' + d.failed[0].why : ''),
       d.failed.length ? 'r' : 'g');
   LY.dirty = {}; $('#lyapply').disabled = true;
+  LY.stamp = Date.now();
   await refreshEdits(); lyLoad();
 }
 

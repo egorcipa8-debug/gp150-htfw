@@ -1671,3 +1671,65 @@ the Graphics tab has been apologising for since §16.
 `Blob.off` is `hdr - size` now and `Blob.end` is `hdr`; the scan requires room
 *before* a candidate rather than after it. The descriptor guard is unchanged -
 it protects `[hdr, hdr + 12)`, which was always right.
+
+## 35. The screen, as the pedal assembles it
+
+§33 read the layout as numbers and drew it as boxes. Boxes are enough to move
+something and not enough to recognise it, and the reason is that the three
+things that make a screen a screen - which object a call is about, who its
+parent is, and what was put inside it - travel through registers and struct
+slots rather than through immediates.
+
+`lv_trace.py` follows them. The builders are stereotyped:
+
+```
+    bl   lv_obj_create      ; r0 = parent
+    str  r0,[r4,#0x2c]      ; the handle goes into a slot of the screen struct
+    ldr  r0,[r4,#0x2c]      ; and comes back out for each setter
+    movs r1,#0
+    movs r2,#44
+    bl   set_pos
+```
+
+so a tracker that knows four kinds of value - a constant, a word from the
+literal pool, what a call returned, and what a struct slot holds - can follow a
+widget from its birth to its contents. Two details make it work rather than
+nearly work:
+
+* **r4 to r11 survive a call.** A builder with several widgets in flight parks
+  their handles in the high registers precisely because a call cannot disturb
+  them, and a tracker that clears everything at each `bl` loses every one.
+* **the literal pool is data.** A picture and a caption both arrive as
+  `ldr rN,[pc,#imm]`, and the pool is in the file, so both can be read.
+
+Everything else names itself, on this image or any other:
+
+| role | how it is recognised | here |
+|------|---------------------|------|
+| `lv_obj_create` | its result is what gets stored into the struct slots | `0x8002A09C` |
+| `set_pos` / `set_size` | pass LVGL properties 7/8 and 1/4 to the property helper | `0x8002D9D2`, `0x8002DA98` |
+| `lv_img_set_src` | handed a pointer that lands exactly on an image descriptor | `0x80027918` |
+| `lv_obj_align` | handed an alignment in LVGL's own range with two offsets | `0x80029670` |
+
+A handler that delegates is followed two levels down - a helper is one whose
+own body calls the constructor or the setters - and each invocation is tagged
+by its call site so the second row of a list does not land on top of the first.
+That took the tuner screen from one widget to fifty-four and the home screen
+from nine to eighty-three.
+
+With the tree in hand the coordinates finally compose: LVGL's are relative to a
+parent, and an aligned widget needs the parent's box before it has one of its
+own, so placement walks down from the screen rather than treating each widget
+alone. Then the artwork goes on, at the picture's own size when the widget was
+given none - which is how an `lv_img` normally works.
+
+The result is the home screen with its amp badge, its OFF plate, its pedal, its
+battery and its two indicator lamps where the device puts them. Studio's
+Раскладка tab draws that under the editable boxes, so the thing being dragged is
+the thing on the screen.
+
+**What is still missing, plainly.** Captions are set as `set_text(obj, "%s")`
+with the string built at run time from the tables, so almost no label resolves
+statically. Background colours are not read yet. Widgets built three or more
+levels down are not followed. So this is the screen's structure and its
+pictures, not a photograph of it.
