@@ -62,11 +62,21 @@ SDRAM = 0x80000000
 class Image(object):
     """A firmware image, with the SDRAM half of section b addressable."""
 
-    def __init__(self, path):
-        self.fw = htfw_tool.Firmware(open(path, 'rb').read())
-        if self.fw.body is None:
-            raise SystemExit("payload is packed and could not be unpacked")
-        self.body = bytearray(self.fw.body)
+    def __init__(self, path=None, fw=None, body=None):
+        """From a file, or from a payload somebody else already holds.
+
+        Studio keeps the unpacked payload in memory and edits it in place, so
+        it passes its own `fw` and `body` and the two share the bytearray -
+        a font replacement lands in the project the same way an image
+        replacement does.
+        """
+        if path is not None:
+            self.fw = htfw_tool.Firmware(open(path, 'rb').read())
+            if self.fw.body is None:
+                raise SystemExit("payload is packed and could not be unpacked")
+            self.body = bytearray(self.fw.body)
+        else:
+            self.fw, self.body = fw, body
         tbl = flat_image.load_table(self.fw, bytes(self.body))
         if not tbl:
             raise SystemExit("section b has no load table; this is not a "
@@ -360,65 +370,77 @@ def _draw(face, ch, bpp):
     return bytes(bits), w, h, x0, asc - y1, adv
 
 
-def cmd_replace(path, which, ttf, out, size=None):
+def write_face(img, f, ttf, size=None, report=lambda *_a: None):
+    """Re-render a font's ASCII range from a TrueType or OpenType face.
+
+    The boxes, advances and bitmaps are all recomputed; the glyph count, the
+    cmaps and everything around the font are left exactly as they were. The new
+    bitmaps have to fit the span the old ones held, so the point size steps down
+    until they do - and if nothing fits, this raises rather than write past the
+    end and take the glyph table with it.
+    """
     from PIL import ImageFont
-    img, fonts = load_fonts(path)
-    f = fonts[which]
     if f.n_ascii == 0:
-        raise SystemExit("font %d does not start with a plain ASCII cmap" % which)
+        raise ValueError("this font has no plain ASCII cmap to replace")
     b0, blob = f.span()
     target = f.height()
-    print("font %d: %d glyphs, %d bpp, %d px tall, %d bytes of bitmap"
-          % (which, f.count - 1, f.bpp, target, blob))
 
-    # Pick the pixel size whose capitals come out the height the originals are,
-    # then step down until the new bitmaps fit the room the old ones had.
     def build(pt):
         face = ImageFont.truetype(ttf, pt)
         gs = []
         for k in range(f.n_ascii):
-            ch = chr(f.first + k)
-            r = _draw(face, ch, f.bpp)
+            r = _draw(face, chr(f.first + k), f.bpp)
             if r is None:
                 return None
             gs.append(r)
         return gs
 
     if size:
-        best = size
+        pt = int(size)
     else:
-        best = None
-        for pt in range(6, 96):
-            face = ImageFont.truetype(ttf, pt)
+        pt = target
+        for probe in range(6, 96):
+            face = ImageFont.truetype(ttf, probe)
             bb = face.getbbox('Hg')
             if bb and bb[3] - bb[1] > target:
-                best = max(6, pt - 1)
+                pt = max(6, probe - 1)
                 break
-        best = best or target
-    while best >= 5:
-        gs = build(best)
+    gs = None
+    while pt >= 5:
+        gs = build(pt)
         if gs is not None:
             total = sum(len(g[0]) for g in gs)
             if total <= blob:
                 break
-            print("   %d pt needs %d bytes, %d available - trying smaller"
-                  % (best, total, blob))
-        best -= 1
-    else:
-        raise SystemExit("nothing from this face fits the room the font has")
+            report("   %d pt needs %d bytes, %d available - trying smaller"
+                   % (pt, total, blob))
+        pt -= 1
+        gs = None
+    if gs is None:
+        raise ValueError("nothing from this face fits the %d bytes this font "
+                         "has room for" % blob)
 
     data = bytearray(blob)
     at = 0
     for k, (bits, w, h, ox, oy, adv) in enumerate(gs):
         data[at:at + len(bits)] = bits
         f.put(f.gid + k, {'bi': at, 'adv': min(adv, 2047), 'w': w, 'h': h,
-                      'ox': max(-128, min(127, ox)),
-                      'oy': max(-128, min(127, oy))})
+                          'ox': max(-128, min(127, ox)),
+                          'oy': max(-128, min(127, oy))})
         at += len(bits)
     img.write(b0, bytes(data))
-    print("   %d pt, %d glyphs, %d of %d bitmap bytes used"
-          % (best, len(gs), at, blob))
+    return {'pt': pt, 'glyphs': len(gs), 'used': at, 'room': blob}
 
+
+def cmd_replace(path, which, ttf, out, size=None):
+    img, fonts = load_fonts(path)
+    f = fonts[which]
+    b0, blob = f.span()
+    print("font %d: %d glyphs, %d bpp, %d px tall, %d bytes of bitmap"
+          % (which, f.count - 1, f.bpp, f.height(), blob))
+    r = write_face(img, f, ttf, size, report=print)
+    print("   %d pt, %d glyphs, %d of %d bitmap bytes used"
+          % (r['pt'], r['glyphs'], r['used'], r['room']))
     n = img.save(out)
     print("   wrote %s (%d bytes), all section CRCs and the file CRC restamped"
           % (out, n))

@@ -57,6 +57,25 @@ SUITE_ASSETS = [
 FONT_DIR = os.path.join(HERE, 'fonts')
 
 
+def sysfonts():
+    """The pedal's own menu typefaces.
+
+    They live in the SDRAM half of section b, which is copied there at boot -
+    which is why every earlier search for them, run at the flash base, came back
+    empty. `tools/lv_font.py` has the whole story.
+    """
+    import lv_font
+    img = lv_font.Image(fw=PROJECT.fw, body=PROJECT.body)
+    out = []
+    for k, d in enumerate(lv_font.find(img)):
+        f = lv_font.Font(img, d)
+        b0, ln = f.span()
+        out.append({'i': k, 'dsc': d, 'glyphs': f.count - 1, 'bpp': f.bpp,
+                    'height': f.height(), 'bitmap': b0, 'blob': ln,
+                    'ascii': f.n_ascii})
+    return img, out
+
+
 CAPTIONS = os.path.join(HERE, 'captions.json')
 
 
@@ -1539,6 +1558,32 @@ class Handler(BaseHTTPRequestHandler):
                 span = min(span, len(PROJECT.body) - off - 1024)
                 w = PROJECT.alpha_width(off, max(span, 24576))
                 return self._json({'off': off, 'width': w})
+            if u.path == '/api/sysfonts':
+                _img, items = sysfonts()
+                return self._json({'ok': True, 'items': items})
+            if u.path == '/api/sysfont_sheet':
+                import lv_font
+                img, items = sysfonts()
+                which = int(q.get('font', ['0'])[0])
+                f = lv_font.Font(img, items[which]['dsc'])
+                tiles = [f.render(i) for i in range(1, min(f.count, 96))]
+                tiles = [t for t in tiles if t]
+                if not tiles:
+                    raise ValueError("that font rendered nothing")
+                scale = int(q.get('scale', ['2'])[0])
+                w = max(t.width for t in tiles) + 2
+                h = max(t.height for t in tiles) + 2
+                cols = 24
+                rows = (len(tiles) + cols - 1) // cols
+                sheet = Image.new('L', (cols * w, rows * h), 0)
+                for n, t in enumerate(tiles):
+                    sheet.paste(t, ((n % cols) * w + 1, (n // cols) * h + 1))
+                if scale > 1:
+                    sheet = sheet.resize((sheet.width * scale,
+                                          sheet.height * scale), Image.NEAREST)
+                buf = io.BytesIO()
+                sheet.convert('RGB').save(buf, 'PNG')
+                return self._send(200, buf.getvalue(), 'image/png')
             if u.path == '/api/labels':
                 # Every indexed tile that has a word printed on it, with the
                 # word's box and whatever caption has been typed for it before.
@@ -1783,6 +1828,26 @@ class Handler(BaseHTTPRequestHandler):
                     outline_color=_rgb(data.get('ocolor', '#000000')),
                     dy=int(data.get('dy', 0)))
                 return self._json({'ok': True, 'edits': PROJECT.edits})
+            if u.path == '/api/sysfont_replace':
+                import lv_font
+                img, items = sysfonts()
+                which = int(data.get('font', 0))
+                ttf = data.get('ttf') or ''
+                if not os.path.isfile(ttf):
+                    return self._json({'ok': False, 'error': 'no such font file'})
+                f = lv_font.Font(img, items[which]['dsc'])
+                b0, blob = f.span()
+                before = len(PROJECT.images)
+                # the blob sits inside section b, so the same guard that keeps
+                # a texture off an image descriptor applies here too
+                PROJECT._check_span(img.off(b0, blob), blob,
+                                    'replacing that font')
+                lv_font.write_face(img, f, ttf, size=data.get('size') or None)
+                PROJECT.edits += 1
+                after = len(gfx_index.scan(PROJECT.body))
+                return self._json({'ok': True, 'edits': PROJECT.edits,
+                                   'descriptors_before': before,
+                                   'descriptors_after': after})
             if u.path == '/api/retypeset':
                 # The whole point of the Font tab: change the face of every
                 # word already printed into the artwork, keeping each tile's

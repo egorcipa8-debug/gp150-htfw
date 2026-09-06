@@ -441,6 +441,29 @@ dialog::backdrop{background:#0009}
 
     <div class="card">
       <div class="row">
+        <b class="meta">Системный шрифт педали</b>
+        <button class="primary" onclick="sysLoad()">Найти шрифты</button>
+        <select id="sysel" style="min-width:230px" onchange="sysSheet()"></select>
+        <label>Кегль <input type="number" id="syssize" placeholder="авто" style="width:70px"></label>
+        <div class="spacer"></div>
+        <button class="primary" onclick="sysReplace()">Заменить выбранным шрифтом</button>
+      </div>
+      <div class="hint">
+        Это тот самый шрифт, которым педаль рисует <b>Gain</b>, названия вкладок и
+        настройки — он лежит в прошивке в формате LVGL, четырнадцать начертаний от
+        7 до 63 пикселей. Раньше он не находился, потому что секция b не
+        исполняется на месте: она копируется в ITCM и SDRAM, и искать её надо по
+        тем адресам, куда её кладут, а не там, где она лежит.<br>
+        Заменяется на любой TTF/OTF из списка вверху вкладки. Кегль подбирается
+        сам так, чтобы новые растры влезли в то же место, что и старые; если не
+        влезают — размер уменьшается по шагу. Внизу видно, как выглядит сейчас.
+      </div>
+      <div id="sysinfo" class="hint"></div>
+      <div id="syssheet" style="overflow:auto;max-height:340px;background:#0b0d11;border-radius:6px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
         <b class="meta">Сменить шрифт у всех надписей</b>
         <button class="primary" onclick="labelsLoad()">Найти надписи</button>
         <label>Запас <input type="number" id="lpad" value="2" min="0" max="6" style="width:56px"
@@ -1272,6 +1295,55 @@ async function applyText(){
     log(`✓ "${p.text}" written into 0x${p.off.toString(16).toUpperCase()}`,'g');
     await refreshEdits(); fontPreview();
   }catch(_){ log('could not write that','r') }
+}
+
+/* ---- the pedal's own menu typeface ---------------------------------------
+   Fourteen LVGL fonts in the SDRAM half of section b. See FINDINGS §32 for
+   why they took so long to find. */
+
+let SYSF=[];
+
+async function sysLoad(){
+  let d;
+  try{ d=await api('/api/sysfonts'); }
+  catch(_){ log('сначала открой прошивку','r'); return }
+  SYSF=d.items;
+  const sel=$('#sysel'); sel.innerHTML='';
+  SYSF.forEach(f=>{
+    const o=document.createElement('option');
+    o.value=f.i; o.textContent=`#${f.i} — ${f.height} px, ${f.glyphs} глифов, ${f.bpp} bpp`;
+    sel.appendChild(o);
+  });
+  log(`нашёл ${SYSF.length} системных шрифт(ов)`,'g');
+  sysSheet();
+}
+
+function sysSheet(){
+  const i=+$('#sysel').value, f=SYSF[i];
+  if(!f)return;
+  $('#sysinfo').innerHTML=`дескриптор 0x${f.dsc.toString(16).toUpperCase()} ·
+    растр 0x${f.bitmap.toString(16).toUpperCase()} · ${f.blob} байт под глифы ·
+    ASCII: ${f.ascii} символов`;
+  $('#syssheet').innerHTML=`<img src="/api/sysfont_sheet?font=${i}&scale=2&t=${Date.now()}">`;
+}
+
+async function sysReplace(){
+  const i=+$('#sysel').value, f=SYSF[i];
+  if(!f){log('сначала найди шрифты','r');return}
+  const ttf=$('#fontsel').value;
+  if(!ttf){log('выбери шрифт в списке вверху','r');return}
+  const face=($('#fontsel').selectedOptions[0]||{}).textContent||ttf;
+  if(!confirm(`Заменить системный шрифт #${i} (${f.height} px) на «${face}»?`)) return;
+  const size=+$('#syssize').value||0;
+  try{
+    const d=await api('/api/sysfont_replace',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({font:i,ttf:ttf,size:size||null})});
+    if(!d.ok){log(d.error,'r');return}
+    log(`✓ системный шрифт #${i} заменён; дескрипторов картинок ${d.descriptors_before} → ${d.descriptors_after}`,
+        d.descriptors_before===d.descriptors_after?'g':'r');
+    await refreshEdits(); sysSheet();
+  }catch(_){ log('замена не удалась','r') }
 }
 
 /* ---- the lettering already in the artwork ---------------------------------
