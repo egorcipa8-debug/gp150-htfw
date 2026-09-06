@@ -71,11 +71,26 @@ def layout():
     """
     import lv_font
     import lv_layout
-    if LAYOUT['obj'] is None or LAYOUT['stamp'] is not id(PROJECT.body):
+    if LAYOUT['obj'] is None or LAYOUT['stamp'] != PROJECT.generation:
         img = lv_font.Image(fw=PROJECT.fw, body=PROJECT.body)
         LAYOUT['obj'] = lv_layout.Layout(img=img)
-        LAYOUT['stamp'] = id(PROJECT.body)
+        LAYOUT['stamp'] = PROJECT.generation
     return LAYOUT['obj']
+
+
+# What each screen id is, read off the GP-200 project's registry, which
+# registers the same ids with the same gaps. Only 0x04 is confirmed here - its
+# widgets lay out as a header, a body, a footer and three tabs, which is the
+# global settings page - so the rest are labelled as the family's names and not
+# as fact.
+SCREEN_NAMES = {
+    0x00: 'заставка', 0x01: 'главный', 0x02: 'меню правки',
+    0x03: 'цепочка', 0x04: 'глобальные настройки', 0x05: 'футсвитчи',
+    0x06: 'сохранение', 0x07: 'драм-машина', 0x09: 'тюнер',
+    0x0A: 'лупер', 0x0B: 'глобальный EQ', 0x0C: 'CTRL', 0x0D: 'EXP',
+    0x0E: 'калибровка EXP', 0x0F: 'сброс к заводским', 0x10: 'выбор банка',
+    0x11: 'перегрузка', 0x12: 'MIDI', 0x13: 'заводской тест', 0x14: 'лог',
+}
 
 
 def layout_value(L, addr):
@@ -91,7 +106,7 @@ def layout_screen(which):
     reg = L.registry()
     if which >= len(reg):
         raise ValueError("there are only %d screens" % len(reg))
-    entry = L.func_of(reg[which][0]) or reg[which][0]
+    entry = L.entry(which)
     out = []
     for k, r in enumerate(L.widgets(entry)):
         item = {'i': k, 'w': layout_value(L, r['size']['a_at']),
@@ -207,6 +222,9 @@ class Project(object):
     def __init__(self):
         self.path = None
         self.fw = None
+        # bumped whenever `body` is replaced rather than edited, which is what
+        # lets a cache tell "the same file, changed" from "a different buffer"
+        self.generation = 0
         self.body = None          # mutable copy of the unpacked payload
         self.orig = None          # pristine copy, for preserve-alpha and revert
         self.regions = []
@@ -223,6 +241,7 @@ class Project(object):
             raise RuntimeError("payload is packed and could not be unpacked")
         self.path = path
         self.fw = fw
+        self.generation += 1
         self.orig = bytes(fw.body)
         self.body = bytearray(fw.body)
         self.edits = 0
@@ -1099,7 +1118,11 @@ class Project(object):
         return None
 
     def revert(self):
+        # a new bytearray, so anything holding the old one - the layout cache,
+        # a font view - has to be told, or it would go on editing a buffer
+        # nobody reads any more
         self.body = bytearray(self.orig)
+        self.generation += 1
         self.edits = 0
         self.scan_strings()
 
@@ -1612,10 +1635,13 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == '/api/layout':
                 L = layout()
                 reg = L.registry()
+                ids = L.ids()
                 rows = []
                 for i, h in enumerate(reg):
-                    e = L.func_of(h[0]) or h[0]
-                    rows.append({'i': i, 'handler': e,
+                    e = L.entry(i)
+                    sid = ids[i] if i < len(ids) else None
+                    rows.append({'i': i, 'handler': e, 'id': sid,
+                                 'name': SCREEN_NAMES.get(sid, ''),
                                  'widgets': len(L.widgets(e))})
                 return self._json({'ok': True, 'screens': rows,
                                    'set_pos': L.pos, 'set_size': L.size})

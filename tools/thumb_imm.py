@@ -23,7 +23,7 @@ names.
 
 import struct
 
-__all__ = ['calls', 'expand_imm', 'read_imm', 'encode_imm']
+__all__ = ['calls', 'writes', 'expand_imm', 'read_imm', 'encode_imm']
 
 
 def _u16(b, i):
@@ -142,13 +142,63 @@ def _bl(b, i):
     return off + 4
 
 
-def calls(code, base, lookback=12):
+def writes(w):
+    """Which low register a 16-bit instruction clobbers.
+
+    `None` for one that touches nothing we track, a register number for one
+    that writes exactly that, and `'all'` for anything that ends the straight
+    line - a branch, a pop, a load-multiple, a call. Anything not recognised
+    also returns `'all'`, because a tracker that guesses wrong reports a
+    constant that was overwritten, and a wrong coordinate is worse than a
+    missing one.
+    """
+    if w < 0x2000:                       # shift, add, sub - register form
+        return w & 7
+    if w < 0x2800:                       # MOVS imm8, read as an immediate
+        return (w >> 8) & 7
+    if w < 0x3000:                       # CMP imm8
+        return None
+    if w < 0x4000:                       # ADDS/SUBS imm8
+        return (w >> 8) & 7
+    if w < 0x4400:                       # data processing, register
+        return w & 7
+    if w < 0x4500:                       # ADD hi
+        return (w & 7) | ((w >> 4) & 8)
+    if w < 0x4600:                       # CMP hi
+        return None
+    if w < 0x4700:                       # MOV hi
+        return (w & 7) | ((w >> 4) & 8)
+    if w < 0x4800:                       # BX / BLX
+        return 'all'
+    if w < 0x5000:                       # LDR literal
+        return (w >> 8) & 7
+    if w < 0x9000:                       # load/store, register and immediate
+        return w & 7
+    if w < 0xB000:                       # load/store sp-relative, ADR, ADD sp
+        return (w >> 8) & 7
+    if w < 0xC000:                       # the miscellaneous block
+        if 0xB200 <= w < 0xB300 or 0xBA00 <= w < 0xBB00:
+            return w & 7                 # extends and byte reverses
+        if 0xBC00 <= w < 0xBE00:
+            return 'all'                 # POP
+        if (0xB400 <= w < 0xB600 or w < 0xB100 or 0xBE00 <= w):
+            return None                  # PUSH, ADD/SUB sp, BKPT, IT, NOP
+        return None                      # CBZ / CBNZ test, they write nothing
+    if w < 0xD000:                       # LDMIA / STMIA
+        return 'all'
+    if w < 0xE800:                       # conditional and plain branches
+        return 'all'
+    return 'all'
+
+
+def calls(code, base):
     """Every BL, with whatever constants were in r0-r3 when it was reached.
 
-    Walks forward through the halfword stream, remembering the last few
-    immediate loads, and at each BL reports the registers whose value is known.
-    A register written by anything else - a load, a move, arithmetic - is
-    forgotten, so what comes back is the arguments that really are constants.
+    Walks the halfword stream, remembering immediate loads and forgetting a
+    register the moment anything else could have written it. What comes back is
+    the arguments that provably still held the constant at the call - a value
+    is dropped rather than guessed, so a missing argument means "we could not
+    follow it", never "it was something else".
     """
     out = []
     regs = {}
@@ -160,6 +210,8 @@ def calls(code, base, lookback=12):
             rd, val, width = imm
             if rd < 4:
                 regs[rd] = (val, base + i, width)
+            elif rd in regs:
+                del regs[rd]
             i += width
             continue
         w = _u16(code, i)
@@ -170,20 +222,14 @@ def calls(code, base, lookback=12):
             regs = {}
             i += 4
             continue
-        # anything that writes a low register with something we cannot follow
-        if (w & 0xF800) == 0x4800:                   # LDR Rd,[pc,#imm]
-            regs.pop((w >> 8) & 7, None)
-        elif (w & 0xFE00) in (0x1800, 0x1A00):       # ADD/SUB register
-            regs.pop(w & 7, None)
-        elif (w & 0xF800) in (0x3000, 0x3800):       # ADDS/SUBS Rd,#imm8
-            regs.pop((w >> 8) & 7, None)
-        elif (w & 0xFC00) == 0x4600:                 # MOV Rd,Rm
-            regs.pop((w & 7) | ((w >> 4) & 8), None)
-        elif (w & 0xF000) in (0x5000, 0x6000, 0x7000, 0x9000):   # loads
-            regs.pop(w & 7, None)
-        elif (w & 0xE000) == 0xE000 and (w & 0xF800) != 0xE000:
-            i += 4                                   # a 32-bit instruction
-            regs.clear()
+        if (w & 0xF800) in (0xE800, 0xF000, 0xF800):
+            regs.clear()                 # a 32-bit instruction we do not model
+            i += 4
             continue
+        hit = writes(w)
+        if hit == 'all':
+            regs.clear()
+        elif hit is not None:
+            regs.pop(hit, None)
         i += 2
     return out

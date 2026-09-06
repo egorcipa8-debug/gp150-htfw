@@ -32,8 +32,8 @@ button:disabled{opacity:.45;cursor:default}
 input,select{background:#1C1C1C;color:var(--ink);border:1px solid var(--line);
              border-radius:5px;padding:5px 8px;font:inherit}
 input[type=number]{width:74px}
-nav{display:flex;gap:2px;padding:0 16px;background:var(--panel);border-bottom:1px solid var(--line)}
-nav a{padding:8px 16px;color:var(--dim);cursor:pointer;border-bottom:2px solid transparent}
+nav{display:flex;flex-wrap:wrap;gap:2px;padding:0 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+nav a{padding:8px 16px;color:var(--dim);cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent}
 nav a.on{color:var(--ink);border-bottom-color:var(--accent)}
 main{padding:16px}
 .row{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
@@ -1343,18 +1343,28 @@ let LY = {screens: [], items: [], sel: -1, dirty: {}};
 
 async function lyInit(){
   let d;
+  $('#lystate').textContent = 'читаю раскладку…';
   try{ d = await api('/api/layout'); }
-  catch(_){ log('сначала открой прошивку','r'); return }
+  catch(_){ $('#lystate').textContent=''; log('сначала открой прошивку','r'); return }
+  $('#lystate').textContent = '';
   LY.screens = d.screens;
   const sel = $('#lyscr'), keep = sel.value;
   sel.innerHTML = '';
   d.screens.forEach(x => {
     const o = document.createElement('option');
     o.value = x.i;
-    o.textContent = 'экран ' + x.i + ' — ' + x.widgets + ' элемент(ов)';
+    o.textContent = (x.id === null ? 'экран ' + x.i
+                                   : '0x' + x.id.toString(16).toUpperCase().padStart(2,'0')) +
+      (x.name ? ' — ' + x.name : '') + ' · ' + x.widgets + ' элем.';
     sel.appendChild(o);
   });
-  if(keep) sel.value = keep;
+  // an empty screen looks like a broken tab, so open on the busiest one
+  if(keep !== '' && keep !== null) sel.value = keep;
+  else {
+    let best = d.screens[0] || {i:0, widgets:0};
+    d.screens.forEach(x => { if(x.widgets > best.widgets) best = x; });
+    sel.value = best.i;
+  }
   log('раскладка: ' + d.screens.length + ' экранов; set_pos 0x' +
       d.set_pos.toString(16).toUpperCase() + ', set_size 0x' +
       d.set_size.toString(16).toUpperCase(), 'g');
@@ -1388,8 +1398,8 @@ function lyDraw(){
     el.style.cssText =
       'position:absolute;left:' + (it.x * LYS) + 'px;top:' + (it.y * LYS) + 'px;' +
       'width:' + (it.w * LYS) + 'px;height:' + (it.h * LYS) + 'px;box-sizing:border-box;' +
-      'border:1px solid hsl(' + hue + ' 70% 60%);cursor:move;' +
-      'background:hsl(' + hue + ' 70% 60% / ' + (i === LY.sel ? 0.22 : 0.07) + ')';
+      'border:' + (i === LY.sel ? 2 : 1) + 'px solid hsl(' + hue + ' 80% 65%);cursor:move;' +
+      'background:hsl(' + hue + ' 80% 55% / ' + (i === LY.sel ? 0.30 : 0.14) + ')';
     el.title = i + ': ' + it.w + '×' + it.h + ' @ ' + it.x + ',' + it.y;
     const tag = document.createElement('div');
     tag.textContent = i;
@@ -1404,6 +1414,14 @@ function lyDraw(){
     grip.onmousedown = e => lyDrag(e, i, true);
     c.appendChild(el);
   });
+  if(!LY.items.length){
+    const m = document.createElement('div');
+    m.className = 'hint';
+    m.style.cssText = 'position:absolute;left:12px;top:12px;right:12px';
+    m.textContent = 'На этом экране виджеты создаёт не сам обработчик, а то, ' +
+      'что он вызывает — сюда они не попадают. Выбери другой экран.';
+    c.appendChild(m);
+  }
   lyList();
 }
 

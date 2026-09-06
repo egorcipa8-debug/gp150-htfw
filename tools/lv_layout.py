@@ -43,6 +43,10 @@ SCREEN = (320, 240)
 # artwork, strings and fonts; scanning them as code only wastes time.
 CODE_LEN = 0x60000
 
+# A widget's set_pos and set_size are emitted together - ten bytes apart in the
+# code read so far. Anything further apart belongs to another object.
+PAIR_SPAN = 64
+
 
 class Layout(object):
     def __init__(self, path=None, img=None):
@@ -51,6 +55,7 @@ class Layout(object):
                                         self.img.sd_off + CODE_LEN])
         self.calls = thumb_imm.calls(self.code, SDRAM)
         self.pos, self.size = self._setters()
+        self.reg = self._registry()
         self.funcs = self._prologues()
 
     # -- who is who ------------------------------------------------------
@@ -83,15 +88,27 @@ class Layout(object):
         return top[1], top[0]                       # (position, size)
 
     def _prologues(self):
-        """Function starts, so a call can be attributed to the screen it is in."""
-        out = []
+        """Function starts, so a call can be attributed to the screen it is in.
+
+        A `push {..., lr}` is only a guess - the same halfword occurs in data,
+        and a spurious start in the middle of a handler would split it and hand
+        half its widgets to the wrong screen. The registry's own entry points
+        are not guesses, so they are added and win ties.
+        """
+        out = set()
         for i in range(0, len(self.code) - 2, 2):
             w = struct.unpack_from('<H', self.code, i)[0]
-            if (w & 0xFF00) == 0xB500:              # push {..., lr}
-                out.append(SDRAM + i)
-            elif w == 0xE92D:
-                out.append(SDRAM + i)
-        return out
+            if (w & 0xFF00) == 0xB500 or w == 0xE92D:
+                out.add(SDRAM + i)
+        for h in self.reg:
+            out.update(h)
+        return sorted(out)
+
+    def entry(self, which):
+        """Where screen `which`'s first handler begins."""
+        h = self.reg[which][0]
+        f = self.func_of(h)
+        return f if f == h else h
 
     def func_of(self, addr):
         import bisect
@@ -99,7 +116,42 @@ class Layout(object):
         return self.funcs[i - 1] if i else None
 
     # -- the registry ----------------------------------------------------
+    def ids(self):
+        """The screen numbers the firmware itself uses.
+
+        The registrar is called once per screen with the id as a plain constant
+        and the three handlers as literal-pool loads, so the id is the one
+        argument a scan of the ITCM half can see. Find the function called ten
+        or more times with nothing but a small constant in r0, and its calls -
+        in order - are the ids that go with the pointer triples in the pool.
+
+        Returns [] rather than guessing if that shape is not there, and the
+        caller falls back to numbering the screens in the order it found them.
+        """
+        itcm = bytes(self.img.body[self.img.itcm_off:
+                                   self.img.itcm_off + self.img.itcm_len])
+        cs = thumb_imm.calls(itcm, 0)
+        by = collections.defaultdict(list)
+        for c in cs:
+            a = c['args']
+            if 0 in a and a[0][0] <= 0x1F:
+                by[c['target']].append((c['at'], a[0][0]))
+        # the registrar is called once per screen, so its ids are all
+        # different - which is what tells it apart from the many functions
+        # that take a small number and are called repeatedly
+        best = []
+        for v in by.values():
+            if len(set(x for _a, x in v)) == len(v) and len(v) > len(best):
+                best = v
+        if len(best) < 10 or len(best) != len(self.reg):
+            return []
+        best.sort()
+        return [v for _at, v in best]
+
     def registry(self):
+        return self.reg
+
+    def _registry(self):
         """The screen table: id -> three handlers, read out of the ITCM half.
 
         The init routine registers each screen with three function pointers, and
@@ -156,6 +208,11 @@ class Layout(object):
             if c['target'] == self.pos:
                 pend = rec
             else:
+                # the two calls for one object sit within a few instructions of
+                # each other; anything further apart is a different object and
+                # pairing them would invent a rectangle
+                if pend is not None and c['at'] - pend['at'] > PAIR_SPAN:
+                    pend = None
                 out.append({'x': pend['a'] if pend else 0,
                             'y': pend['b'] if pend else 0,
                             'w': rec['a'], 'h': rec['b'],
@@ -191,13 +248,17 @@ def cmd_setters(path):
 def cmd_screens(path):
     L = Layout(path)
     reg = L.registry()
-    print("%d screens registered" % len(reg))
+    ids = L.ids()
+    print("%d screens registered%s"
+          % (len(reg), "" if ids else "  (their own ids could not be read)"))
     print()
-    print("  %-4s %-34s %s" % ("id", "handlers", "widgets laid out"))
+    print("  %-4s %-6s %-34s %s"
+          % ("#", "id", "handlers", "widgets laid out"))
     for i, h in enumerate(reg):
-        w = L.widgets(L.func_of(h[0]) or h[0])
-        print("  %-4d %-34s %d"
-              % (i, ' '.join('0x%08X' % x for x in h), len(w)))
+        w = L.widgets(L.entry(i))
+        print("  %-4d %-6s %-34s %d"
+              % (i, ('0x%02X' % ids[i]) if i < len(ids) else '?',
+                 ' '.join('0x%08X' % x for x in h), len(w)))
 
 
 def cmd_show(path, which):
@@ -205,7 +266,7 @@ def cmd_show(path, which):
     reg = L.registry()
     if which >= len(reg):
         raise SystemExit("there are only %d screens" % len(reg))
-    entry = L.func_of(reg[which][0]) or reg[which][0]
+    entry = L.entry(which)
     w = L.widgets(entry)
     print("screen %d, handler 0x%08X: %d widgets" % (which, entry, len(w)))
     print()
@@ -227,7 +288,7 @@ def cmd_draw(path, which, out):
     from PIL import Image, ImageDraw
     L = Layout(path)
     reg = L.registry()
-    entry = L.func_of(reg[which][0]) or reg[which][0]
+    entry = L.entry(which)
     ws = L.widgets(entry)
     scale = 3
     im = Image.new('RGB', (SCREEN[0] * scale, SCREEN[1] * scale), (16, 18, 24))
