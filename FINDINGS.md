@@ -1462,3 +1462,104 @@ LZO, and not zlib, raw deflate, gzip, LZMA or bzip2 at any offset in the first
 stream cipher or an unidentified packer, then the interface *is* in the update
 file after all, and §28's conclusion needs replacing rather than extending.
 That is the thread to pull next, and it is pure offline work.
+
+## 32. Section b is copied, not executed — and everything follows from that
+
+This overturns §23, §28, §30 and §31. All four were built on the same wrong
+premise, which came from `flat_image.py`: that every section runs in place from
+flash at `0x60000000 + its flash address`. For section b that is false, and it
+is false in a way that made the interface, its layout and its font all
+invisible.
+
+**The load table.** Section b does not begin with code. It begins with a
+40-byte header:
+
+```
+0x08  "V111"                    the version tag
+0x10  u32 0x00038028  flash address   0x14  u32 0x000353E9  size
+0x18  u32 0x00000000  destination     <- ITCM
+0x1C  u32 0x0006D411  flash address   0x20  u32 0x004C7771  size
+0x24  u32 0x80000000  destination     <- SDRAM
+```
+
+The two runs are consecutive - the first ends exactly where the second begins -
+and the second ends two bytes short of the section's own end. So at boot:
+
+* **payload `0x000028`, 218,089 bytes → ITCM `0x00000000`** - the application;
+* **payload `0x035411`, 5,011,313 bytes → SDRAM `0x80000000`** - the interface,
+  its artwork, its strings and its fonts.
+
+**Confirmed four ways, not assumed.** Counting aligned words that point into
+each candidate range: the ITCM half holds 2,571 pointers into ITCM against 267
+into the flash view, ten to one. Checking the 73 veneer targets against a base
+of `0x35411` puts 33 of them on Thumb prologues where every neighbouring base
+scores 0 to 6. `flat_image.py map` now reports 4,613 self-references for the
+ITCM half where the old flash base gave 1,037. And Ghidra, given the corrected
+map, finds **459 references to the menu strings** where the flash base found
+zero - which is what §30 read as "the strings are addressed by index" when the
+truth was simply that we were looking at the wrong addresses.
+
+So: the interface is in the update file, it always was, and §28's "below
+`0x38000`, where updates never reach" was wrong. §31's speculation that the
+modules might be hiding in section g was also wrong, and contradicted this
+project's own earlier and better-evidenced finding that `g` and `h` are the
+JieLi Bluetooth SoC's and the USB-PD controller's firmware - which is also why
+they are byte-identical between V1.0.5 and V1.1.1.
+
+### The interface is LVGL v8
+
+The screen handlers call style setters by property number, and the numbers are
+LVGL's own: `1` width, `4` height, `7` x, `8` y. The global settings screen
+reads, in the file:
+
+```c
+FUN_8002da98(obj, 0x140, 0xf0);      /* set_size(320, 240)  - the screen */
+FUN_8002d9d2(obj, 0, 0x2c);          /* set_pos (0, 44)                  */
+FUN_8002da98(obj, 0x140, 0x2c);      /* set_size(320, 44)   - a bar      */
+FUN_8002d9d2(obj, 10, 0xc);          /* set_pos (10, 12)                 */
+FUN_8002da98(obj, 200, 0x1e);        /* set_size(200, 30)                */
+```
+
+Every widget's position and size on every screen is an immediate constant in
+code we hold. So is its colour: `FUN_80015eac` builds a box with
+`set_pos, set_size, set_bg_color, set_opacity(0xff), set_border_color,
+set_border_width(1)`.
+
+### The system font, found
+
+LVGL stores a bitmap font as `lv_font_fmt_txt`, and the GP-150's are exactly
+that. Fourteen of them:
+
+| # | descriptor | glyphs | bpp | height | bitmap blob |
+|---|-----------|--------|-----|--------|-------------|
+| 0 | `0x80035410` | 98 | 2 | 14 px | 1,790 B |
+| 1 | `0x800361D0` | 96 | 2 | 18 px | 2,652 B |
+| 2 | `0x80037F70` | 95 | 2 | 29 px | 6,060 B |
+| 3 | `0x8003AE20` | 95 | 2 | 38 px | 10,427 B |
+| 4 | `0x8003D418` | 95 | 2 | 7 px | 388 B |
+| 5 | `0x8003DA80` | 95 | 2 | 10 px | 800 B |
+| 6 | `0x8003E340` | 96 | 2 | 13 px | 1,372 B |
+| 7 | `0x8003EE84` | 96 | 2 | 17 px | 2,016 B |
+| 8 | `0x80042EF8` | 312 | 2 | 16 px | 13,449 B |
+| 9 | `0x80049610` | 314 | 2 | 21 px | 23,322 B |
+| 10 | `0x8004CEC8` | 313 | 2 | 15 px | 11,479 B |
+| 11 | `0x80051B70` | 313 | 2 | 18 px | 16,584 B |
+| 12 | `0x80059728` | 74 | 2 | 63 px | 24,649 B |
+| 13 | `0x80259E08` | 157 | 4 | 15 px | 8,832 B |
+
+The depth is **measured, not read**: for each candidate bpp, check that
+consecutive `bitmap_index` values differ by exactly `ceil(box_w*box_h*bpp/8)`.
+On every one of the fourteen a single value scores 38 out of 38 with no
+disagreement, which is why `lv_font.py` trusts the arithmetic over the header
+bitfield it could have read instead.
+
+`tools/lv_font.py` lists them, renders a specimen sheet, and **replaces one
+from any TrueType or OpenType face** - re-rendering the ASCII range into new
+boxes, advances and bitmaps, repacked into the byte span the original held,
+refusing rather than overflowing, and restamping every section CRC and the
+whole-file CRC. Verified end to end: font 9 replaced with Georgia Bold reads
+back as Georgia Bold, and `htfw_tool verify` passes on all seven sections.
+
+**So the menu type can be changed after all.** §30 said it could not, and gave
+the searches that had failed; every one of those searches was run against the
+wrong addresses.

@@ -49,12 +49,55 @@ def load(path):
     return fw, bytes(fw.body)
 
 
-def layout(fw):
-    """[(tag, address, length, payload offset)] for the regions that live in the
-    RT1064's own flash."""
+def load_table(fw, body):
+    """Section b's own header: where its two halves are copied to at boot.
+
+    Section b is **not** executed in place. Its first 0x28 bytes are a header
+    whose two (flash address, size) pairs each carry a destination:
+
+        0x10  u32 flash address   0x14  u32 size   0x18  u32 destination
+        0x1C  u32 flash address   0x20  u32 size   0x24  u32 destination
+
+    and on every GP-150 image seen so far that reads
+
+        b + 0x28      218089 bytes  -> 0x00000000  (ITCM)   the application
+        b + 0x35411  5011313 bytes  -> 0x80000000  (SDRAM)  the interface
+
+    with the two runs consecutive and ending at the section's own end. This is
+    what makes the interface reachable: it is in the file, it is simply written
+    for the address it will be copied to rather than the one it is stored at.
+    Returns [(payload offset, size, destination)] or [] if the header does not
+    look like one.
+    """
+    sec = next((x for x in fw.sections if x.tag == 'b'), None)
+    if sec is None or sec.len < 0x28:
+        return []
+    hdr = body[sec.off:sec.off + 0x28]
+    a1, s1, d1, a2, s2, d2 = struct.unpack_from('<6I', hdr, 0x10)
+    if a1 != sec.flash + 0x28 or a1 + s1 != a2 or a2 + s2 > sec.flash + sec.len:
+        return []
+    if d1 != 0 or not (0x80000000 <= d2 < 0x82000000):
+        return []
+    return [(sec.off + (a1 - sec.flash), s1, d1),
+            (sec.off + (a2 - sec.flash), s2, d2)]
+
+
+def layout(fw, body=None):
+    """[(tag, address, length, payload offset)] as the chip actually sees it.
+
+    Sections c, d, e and f are executed or read in place, so they sit at
+    `0x60000000 + flash address`. Section b is split by its own load table
+    (see `load_table`) into an ITCM half and an SDRAM half; g and h go to other
+    chips entirely and are left out.
+    """
     out = []
+    split = load_table(fw, body) if body is not None else []
     for s in fw.sections:
         if s.flash == 0:
+            continue
+        if s.tag == 'b' and split:
+            for n, (off, ln, dest) in enumerate(split):
+                out.append(('b%d' % (n + 1), dest, ln, off))
             continue
         out.append((s.tag, XIP + s.flash, s.len, s.off))
     return sorted(out, key=lambda r: r[1])
@@ -83,10 +126,15 @@ def self_refs(body, off, ln, base):
 
 def cmd_map(path):
     fw, body = load(path)
-    lo, _img = build(fw, body)
-    print("flat image starts at 0x%08X" % lo)
+    tbl = load_table(fw, body)
+    if tbl:
+        print("section b carries a load table: it is copied, not run in place")
+        for off, ln, dest in tbl:
+            print("   payload 0x%06X  %-9d -> 0x%08X  %s"
+                  % (off, ln, dest, 'ITCM' if dest < 0x1000000 else 'SDRAM'))
+        print()
     print("%-4s %-12s %-10s %-10s %s" % ("id", "address", "length", "in file", "self-refs at that base"))
-    for tag, addr, ln, off in layout(fw):
+    for tag, addr, ln, off in layout(fw, body):
         n = self_refs(body, off, ln, addr)
         print("%-4s 0x%08X   %-10d 0x%06X   %s"
               % (tag, addr, ln, off, n if n is not None else '-'))
@@ -118,14 +166,17 @@ def cmd_base(path, tag=None):
 
 
 def cmd_build(path, out):
+    """One file per run, named <out>.<address>.bin, because the runs are far
+    apart in the address space and one flat file would be gigabytes of padding."""
     fw, body = load(path)
-    lo, img = build(fw, body)
-    open(out, 'wb').write(img)
-    print("%s: %d bytes at 0x%08X..0x%08X" % (out, len(img), lo, lo + len(img)))
-    print("import it as ARM:LE:32:Cortex, base 0x%08X, and disassemble as Thumb"
-          % lo)
-    for tag, addr, ln, _off in layout(fw):
-        print("   %s  0x%08X..0x%08X" % (tag, addr, addr + ln))
+    root, ext = os.path.splitext(out)
+    rows = layout(fw, body)
+    for tag, addr, ln, off in rows:
+        name = "%s.%08X%s" % (root, addr, ext or '.bin')
+        open(name, 'wb').write(body[off:off + ln])
+        print("%-4s 0x%08X  %-9d -> %s" % (tag, addr, ln, name))
+    print()
+    print("import each as ARM:LE:32:Cortex at its own base and disassemble Thumb")
 
 
 def main(argv):

@@ -16,7 +16,12 @@ Several things here are, as far as we can tell, not published anywhere else:
   it is an open question: the GP-200 work reports that that pedal runs FFT
   convolution of an impulse response instead, and the same may be true here
   (`FINDINGS.md` §26);
-- **the boot animation** — 448 KB of what read as noise is a 320x240 GIF.
+- **the boot animation** — 448 KB of what read as noise is a 320x240 GIF;
+- **the load table** — section b is *copied*, not executed in place: its first
+  218,089 bytes go to ITCM at `0x00000000` and the remaining 5,011,313 to SDRAM
+  at `0x80000000`. Every earlier note that called the interface "absent from the
+  image" was reading it at the wrong address. It is in there, it is **LVGL v8**,
+  and so are fourteen bitmap fonts — the menu type included (`FINDINGS.md` §32).
 
 Both are verified byte-exactly, not inferred. Prior work by
 [drewmerc302/valeton-gp50](https://github.com/drewmerc302/valeton-gp50) documents
