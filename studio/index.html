@@ -1452,6 +1452,7 @@ async function lyLoad(){
 function lyDraw(){
   const c = $('#lycanvas');
   c.innerHTML = '';
+  LY.els = [];
   // a photograph of the real screen if there is one, otherwise the sketch
   const cur = +$('#lyscr').value || 0;
   const hasPhoto = LY.photos && (cur in LY.photos);
@@ -1459,7 +1460,8 @@ function lyDraw(){
     const bg = document.createElement('img');
     bg.src = (hasPhoto ? '/api/screen_photo?screen=' : '/api/screen_render?screen=') +
              cur + '&scale=' + LYS + '&t=' + LY.stamp;
-    bg.style.cssText = 'position:absolute;left:0;top:0;image-rendering:pixelated';
+    bg.style.cssText = 'position:absolute;left:0;top:0;image-rendering:pixelated;' +
+                       'pointer-events:none';
     c.appendChild(bg);
   }
   $('#lycroprow').style.display = hasPhoto ? '' : 'none';
@@ -1475,30 +1477,30 @@ function lyDraw(){
     c.appendChild(g);
   }
   LY.items.forEach((it, i) => {
-    if(!it.rooted && !$('#lyfloat').checked) return;
+    if(!it.rooted && !$('#lyfloat').checked){ LY.els.push(null); return; }
     const el = document.createElement('div');
     const hue = it.rooted ? (i * 47) % 360 : 0;
-    el.style.cssText =
-      'position:absolute;left:' + (it.ax * LYS) + 'px;top:' + (it.ay * LYS) + 'px;' +
-      'width:' + (it.w * LYS) + 'px;height:' + (it.h * LYS) + 'px;box-sizing:border-box;' +
-      'border:' + (i === LY.sel ? 2 : 1) + 'px ' + (it.rooted ? 'solid' : 'dashed') +
-      ' hsl(' + hue + ' 80% 65%);cursor:move;' +
-      'background:hsl(' + hue + ' 80% 55% / ' +
-        (i === LY.sel ? 0.28 : (backdrop ? 0.05 : 0.16)) + ')';
+    el.style.cssText = 'position:absolute;box-sizing:border-box;cursor:move';
+    el.style.border = (i === LY.sel ? 2 : 1) + 'px ' +
+      (it.rooted ? 'solid' : 'dashed') + ' hsl(' + hue + ' 80% 65%)';
+    el.style.background = 'hsl(' + hue + ' 80% 55% / ' +
+      (i === LY.sel ? 0.28 : (backdrop ? 0.05 : 0.16)) + ')';
     el.title = i + ': ' + it.w + '×' + it.h + ' @ ' + it.ax + ',' + it.ay +
       (it.rooted ? '' : '  (родитель не определён — положение неизвестно)');
     const tag = document.createElement('div');
     tag.textContent = i;
     tag.style.cssText = 'position:absolute;left:2px;top:0;font-size:10px;' +
-      'line-height:11px;color:hsl(' + hue + ' 70% 78%)';
+      'line-height:11px;pointer-events:none;color:hsl(' + hue + ' 70% 78%)';
     el.appendChild(tag);
     const grip = document.createElement('div');
-    grip.style.cssText = 'position:absolute;right:-3px;bottom:-3px;width:9px;' +
-      'height:9px;border-radius:2px;cursor:nwse-resize;background:hsl(' + hue + ' 70% 60%)';
+    grip.style.cssText = 'position:absolute;right:-4px;bottom:-4px;width:11px;' +
+      'height:11px;border-radius:2px;cursor:nwse-resize;background:hsl(' + hue + ' 70% 60%)';
     el.appendChild(grip);
     el.onmousedown = e => { if(e.target === grip) return; lyDrag(e, i, false); };
     grip.onmousedown = e => lyDrag(e, i, true);
+    LY.els.push(el);
     c.appendChild(el);
+    lyPlace(i);
   });
   if(!LY.items.length){
     const m = document.createElement('div');
@@ -1511,28 +1513,62 @@ function lyDraw(){
   lyList();
 }
 
+/* Move one box without rebuilding the canvas. Redrawing everything on each
+   mouse move - which is what this used to do - throws away the element the
+   pointer is holding and re-requests the backdrop, and dragging turned to
+   treacle. */
+function lyPlace(i){
+  const el = LY.els[i], it = LY.items[i];
+  if(!el) return;
+  el.style.left = (it.ax * LYS) + 'px';
+  el.style.top = (it.ay * LYS) + 'px';
+  el.style.width = (it.w * LYS) + 'px';
+  el.style.height = (it.h * LYS) + 'px';
+}
+
+function lySelect(i){
+  LY.items.forEach((it, k) => {
+    const el = LY.els[k];
+    if(!el) return;
+    const hue = it.rooted ? (k * 47) % 360 : 0;
+    const backdrop = (LY.photos && ((+$('#lyscr').value||0) in LY.photos)) ||
+                     $('#lyreal').checked;
+    el.style.borderWidth = (k === i ? 2 : 1) + 'px';
+    el.style.background = 'hsl(' + hue + ' 80% 55% / ' +
+      (k === i ? 0.28 : (backdrop ? 0.05 : 0.16)) + ')';
+  });
+  LY.sel = i;
+  lyInspector();
+}
+
 function lyDrag(e, i, resize){
   e.preventDefault(); e.stopPropagation();
-  LY.sel = i; lyDraw();
+  lySelect(i);
   const it = LY.items[i];
   const x0 = e.clientX, y0 = e.clientY;
   const ox = it.x, oy = it.y, ow = it.w, oh = it.h;
   const oax = it.ax, oay = it.ay;
+  document.body.style.userSelect = 'none';
   function move(ev){
     const dx = Math.round((ev.clientX - x0) / LYS);
     const dy = Math.round((ev.clientY - y0) / LYS);
-    if(resize){ it.w = Math.max(1, ow + dx); it.h = Math.max(1, oh + dy); }
-    else {
-      // the box is drawn where it lands, but the number that changes is the
-      // one relative to its parent, so move both by the same amount
+    if(resize){
+      it.w = Math.max(1, ow + dx); it.h = Math.max(1, oh + dy);
+    } else {
+      // the box shows where it lands, but the number that changes is the one
+      // relative to its parent, so move both by the same amount
       it.x = Math.max(0, ox + dx); it.y = Math.max(0, oy + dy);
       it.ax = oax + (it.x - ox); it.ay = oay + (it.y - oy);
     }
-    lyMark(i); lyDraw();
+    lyPlace(i);
+    lyInspector();
   }
   function up(){
     document.removeEventListener('mousemove', move);
     document.removeEventListener('mouseup', up);
+    document.body.style.userSelect = '';
+    lyMark(i);
+    lyList();
   }
   document.addEventListener('mousemove', move);
   document.addEventListener('mouseup', up);
@@ -1548,32 +1584,45 @@ function lyMark(i){
   $('#lystate').textContent = Object.keys(LY.dirty).length + ' изменённых чисел';
 }
 
+function lyNum(i, field, v){
+  const it = LY.items[i];
+  const before = it[field];
+  it[field] = Math.max(field === 'w' || field === 'h' ? 1 : 0, +v || 0);
+  if(field === 'x') it.ax += it.x - before;
+  if(field === 'y') it.ay += it.y - before;
+  lyPlace(i); lyMark(i); lyList();
+}
+
 function lyHex(v){ return '0x' + v.toString(16).toUpperCase(); }
 
-function lyList(){
+function lyInspector(){
   const it = LY.items[LY.sel], k = LY.sel;
-  if(!it){
-    $('#lyinsp').textContent = 'выбери прямоугольник';
-  } else {
-    const dis = it.x_at === null ? ' disabled' : '';
-    $('#lyinsp').innerHTML =
-      '<div class="row" style="gap:6px">' +
-      '<label>X <input type="number" value="' + it.x + '" style="width:64px"' + dis +
-        ' onchange="LY.items[' + k + '].x=+this.value;lyMark(' + k + ');lyDraw()"></label>' +
-      '<label>Y <input type="number" value="' + it.y + '" style="width:64px"' + dis +
-        ' onchange="LY.items[' + k + '].y=+this.value;lyMark(' + k + ');lyDraw()"></label>' +
-      '<label>Ш <input type="number" value="' + it.w + '" style="width:64px"' +
-        ' onchange="LY.items[' + k + '].w=+this.value;lyMark(' + k + ');lyDraw()"></label>' +
-      '<label>В <input type="number" value="' + it.h + '" style="width:64px"' +
-        ' onchange="LY.items[' + k + '].h=+this.value;lyMark(' + k + ');lyDraw()"></label>' +
-      '</div><div class="meta">константы: ' +
-      (it.x_at === null ? 'позиция не задаётся числами'
-                        : 'x ' + lyHex(it.x_at) + ', y ' + lyHex(it.y_at)) +
-      ', ш ' + lyHex(it.w_at) + ', в ' + lyHex(it.h_at) + '</div>';
-  }
+  if(!it){ $('#lyinsp').textContent = 'выбери прямоугольник'; return; }
+  const dis = it.x_at === null ? ' disabled' : '';
+  $('#lyinsp').innerHTML =
+    '<div class="row" style="gap:6px">' +
+    '<label>X <input type="number" value="' + it.x + '" style="width:64px"' + dis +
+      ' onchange="lyNum(' + k + ',\'x\',this.value)"></label>' +
+    '<label>Y <input type="number" value="' + it.y + '" style="width:64px"' + dis +
+      ' onchange="lyNum(' + k + ',\'y\',this.value)"></label>' +
+    '<label>Ш <input type="number" value="' + it.w + '" style="width:64px"' +
+      ' onchange="lyNum(' + k + ',\'w\',this.value)"></label>' +
+    '<label>В <input type="number" value="' + it.h + '" style="width:64px"' +
+      ' onchange="lyNum(' + k + ',\'h\',this.value)"></label>' +
+    '<span class="meta">на экране ' + it.ax + ',' + it.ay + '</span>' +
+    '</div><div class="meta">константы: ' +
+    (it.x_at === null ? 'позиция не задаётся числами'
+                      : 'x ' + lyHex(it.x_at) + ', y ' + lyHex(it.y_at)) +
+    ', ш ' + lyHex(it.w_at) + ', в ' + lyHex(it.h_at) +
+    (it.rooted ? '' : ' · родитель не определён, положение неизвестно') + '</div>';
+}
+
+function lyList(){
+  lyInspector();
   $('#lylist').innerHTML = LY.items.map((r, i) =>
     '<div style="padding:2px 0;cursor:pointer;' + (i === LY.sel ? 'color:#8fd' : '') +
-    '" onclick="LY.sel=' + i + ';lyDraw()">' + i + ': ' + r.w + '×' + r.h +
+    (r.rooted ? '' : ';opacity:.55') +
+    '" onclick="lySelect(' + i + ')">' + i + ': ' + r.w + '×' + r.h +
     ' @ ' + r.ax + ',' + r.ay + (r.rooted ? '' : '  ?') + '</div>').join('');
 }
 

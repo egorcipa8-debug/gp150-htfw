@@ -46,11 +46,20 @@ class Val(object):
     simply forgotten, so a caller never has to wonder whether a value is real.
     """
 
-    __slots__ = ('kind', 'v', 'at', 'width', 'base', 'off')
+    __slots__ = ('kind', 'v', 'at', 'width', 'base', 'off', 'tag')
 
-    def __init__(self, kind, v=None, at=None, width=0, base=None, off=None):
+    def __init__(self, kind, v=None, at=None, width=0, base=None, off=None,
+                 tag=None):
         self.kind, self.v, self.at, self.width = kind, v, at, width
         self.base, self.off = base, off
+        # Which function's namespace this value belongs to. A helper receives
+        # its parent as an argument, and that handle was named by the caller -
+        # tagging it with the callee's name would invent an object nobody made.
+        self.tag = tag
+
+    def retag(self, tag):
+        return Val(self.kind, self.v, self.at, self.width, self.base,
+                   self.off, tag)
 
     def key(self):
         """What identifies the same object across two mentions."""

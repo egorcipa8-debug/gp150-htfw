@@ -1777,13 +1777,20 @@ Laying the extracted geometry over the photograph of the home screen:
 So the numbers the Layout tab edits are the device's own. That is worth having
 said out loud, because the rest of this section is about what is *not*.
 
-**Ten of forty-four.** Only ten of the home screen's boxes have a parent chain
-that reaches the screen. The other thirty-four are built by helpers whose
+**Twenty-four of forty-four**, once a second kind of constructor was
+recognised. The screen does not build most of its parts with `lv_obj_create`:
+it calls a factory - a row, a tile, a meter - that returns the object it made,
+and the parent is that call's first argument exactly as it is for the
+constructor proper. Anything whose result is later given a position or a size
+is one, whatever its address. Before that was noticed only ten of the home
+screen's boxes had a parent chain reaching the screen; The other thirty-four are built by helpers whose
 parent could not be worked out, so their coordinates are relative to a
 container nobody identified - their *sizes* are right and their *positions* are
 unknown. They are drawn dashed and hidden by default rather than placed
-somewhere plausible and wrong. The settings screen anchors five of fourteen;
-the tuner, whose widgets are all built two levels down, anchors none.
+somewhere plausible and wrong. the settings screen anchors eleven of fourteen and its two band boundaries
+land exactly on the top of the `Input/Output` row and the top of the
+`Input Level | Output(R) | No CAB Mode(L)` bar in the photograph. The tuner,
+whose widgets are all built further down, still anchors none.
 
 Two bugs came out of the checking, both the kind that only a real comparison
 finds:

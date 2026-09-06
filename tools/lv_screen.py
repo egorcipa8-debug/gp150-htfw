@@ -146,11 +146,26 @@ class Screen(object):
 
         def name(v):
             k = v.key() if v is not None else None
-            return (tag + k) if k is not None else None
+            if k is None:
+                return None
+            # a value handed in by the caller keeps the caller's name
+            return ((v.tag if v.tag is not None else tag) + k)
+
+        # Anything whose result is later given a position or a size is a
+        # constructor, whatever its address: the screen builds most of its
+        # parts by calling a factory - a row, a tile, a meter - that returns
+        # the object it made. The parent is that call's own first argument,
+        # exactly as it is for lv_obj_create.
+        made = set()
+        for c in calls:
+            if c['target'] in (self.L.pos, self.L.size):
+                who = c['args'].get(0)
+                if who is not None and who.kind == 'ret':
+                    made.add(who.v)
 
         ret_slot = {}
         for c in calls:
-            if c['target'] != self.create:
+            if c['target'] != self.create and c['ret'].v not in made:
                 continue
             key = (tag + ('slot',) + c['stored']) if c['stored'] \
                 else (tag + ('ret', c['ret'].v))
@@ -210,8 +225,10 @@ class Screen(object):
             if left > 0 and self._builds_widgets(c['target']):
                 # hand the callee the arguments it was called with, so the
                 # parent it was given is the parent its widgets get
+                init = dict((r, v.retag(v.tag if v.tag is not None else tag))
+                            for r, v in c['args'].items())
                 sub = lv_trace.trace(self.L.code, SD, c['target'],
-                                     self._end(c['target']), init=c['args'])
+                                     self._end(c['target']), init=init)
                 self._walk(sub, objs, order, get,
                            tag + ('@%X' % c['at'],),
                            key if key in objs else parent, left - 1)
