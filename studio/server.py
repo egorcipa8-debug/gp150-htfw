@@ -93,6 +93,43 @@ SCREEN_NAMES = {
 }
 
 
+PHOTOS = os.path.join(HERE, 'photos')
+
+
+def photo_path(which):
+    return os.path.join(PHOTOS, 'screen_%02d.png' % int(which))
+
+
+def photo_crop_path(which):
+    return os.path.join(PHOTOS, 'screen_%02d.json' % int(which))
+
+
+def photo_crop(which):
+    """How much of a photograph is actually the display.
+
+    A picture taken by hand has the bezel, the panel and a bit of the room in
+    it, so each screen keeps four fractions saying where its display starts and
+    stops. They are the user's, not ours, and they live next to the photograph.
+    """
+    try:
+        with open(photo_crop_path(which), 'r', encoding='utf-8') as fh:
+            d = json.load(fh)
+        return [float(d.get(k, v)) for k, v in
+                (('l', 0.0), ('t', 0.0), ('r', 1.0), ('b', 1.0))]
+    except Exception:                                     # noqa: BLE001
+        return [0.0, 0.0, 1.0, 1.0]
+
+
+def photo_render(which, scale):
+    """The photograph, cropped to the display and scaled to 320x240."""
+    im = Image.open(photo_path(which)).convert('RGB')
+    l, t, r, b = photo_crop(which)
+    box = (int(im.width * l), int(im.height * t),
+           max(int(im.width * r), int(im.width * l) + 1),
+           max(int(im.height * b), int(im.height * t) + 1))
+    return im.crop(box).resize((320 * scale, 240 * scale), Image.LANCZOS)
+
+
 SCREENS = {'stamp': None, 'roles': None, 'images': None}
 
 
@@ -1667,6 +1704,22 @@ class Handler(BaseHTTPRequestHandler):
                                    'set_pos': L.pos, 'set_size': L.size})
             if u.path == '/api/layout_screen':
                 return self._json(layout_screen(int(q.get('screen', ['0'])[0])))
+            if u.path == '/api/screen_photos':
+                have = {}
+                if os.path.isdir(PHOTOS):
+                    for f in os.listdir(PHOTOS):
+                        if f.startswith('screen_') and f.endswith('.png'):
+                            have[int(f[7:9])] = photo_crop(int(f[7:9]))
+                return self._json({'ok': True, 'photos': have,
+                                   'dir': PHOTOS})
+            if u.path == '/api/screen_photo':
+                which = int(q.get('screen', ['0'])[0])
+                if not os.path.isfile(photo_path(which)):
+                    return self._json({'ok': False, 'error': 'no photograph'})
+                scale = max(1, min(4, int(q.get('scale', ['2'])[0])))
+                buf = io.BytesIO()
+                photo_render(which, scale).save(buf, 'PNG')
+                return self._send(200, buf.getvalue(), 'image/png')
             if u.path == '/api/screen_render':
                 import lv_font
                 import lv_screen
@@ -1954,6 +2007,24 @@ class Handler(BaseHTTPRequestHandler):
                     outline_color=_rgb(data.get('ocolor', '#000000')),
                     dy=int(data.get('dy', 0)))
                 return self._json({'ok': True, 'edits': PROJECT.edits})
+            if u.path == '/api/screen_photo':
+                which = int(data.get('screen', 0))
+                if not os.path.isdir(PHOTOS):
+                    os.makedirs(PHOTOS)
+                if data.get('data'):
+                    raw = base64.b64decode(data['data'].split(',')[-1])
+                    im = Image.open(io.BytesIO(raw)).convert('RGB')
+                    im.save(photo_path(which))
+                if data.get('crop'):
+                    with open(photo_crop_path(which), 'w',
+                              encoding='utf-8') as fh:
+                        json.dump(data['crop'], fh)
+                if data.get('remove'):
+                    for f in (photo_path(which), photo_crop_path(which)):
+                        if os.path.isfile(f):
+                            os.remove(f)
+                    return self._json({'ok': True, 'removed': True})
+                return self._json({'ok': True, 'crop': photo_crop(which)})
             if u.path == '/api/layout_set':
                 import thumb_imm
                 L = layout()

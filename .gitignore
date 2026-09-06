@@ -23,3 +23,6 @@ tools/spy/htusb_real.def
 
 # the captions people type for the artwork are their working notes
 studio/captions.json
+
+# photographs of the pedal are the user's, not ours
+studio/photos/

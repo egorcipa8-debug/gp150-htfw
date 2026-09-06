@@ -246,6 +246,8 @@ dialog::backdrop{background:#0009}
         <b class="meta">Экран</b>
         <select id="lyscr" style="min-width:220px" onchange="lyLoad()"></select>
         <button onclick="lyInit()">Перечитать</button>
+        <label class="meta"><input type="file" id="lyphoto" accept="image/*"
+               style="width:150px" onchange="lyUpload()"> фото экрана</label>
         <label class="meta"><input type="checkbox" id="lyreal" onchange="lyDraw()"> набросок с картинками</label>
         <label class="meta"><input type="checkbox" id="lygrid" onchange="lyDraw()"> сетка</label>
         <div class="spacer"></div>
@@ -261,12 +263,24 @@ dialog::backdrop{background:#0009}
         те самые константы на месте.<br>
         Число обязано влезть в ту же инструкцию, что стоит сейчас: если не
         влезает, эта правка честно откажется, а остальные применятся.<br>
+        <b>Фото экрана.</b> Сними экран педали телефоном, загрузи сюда — оно ляжет
+        под прямоугольники, и четырьмя ползунками подгоняешь края дисплея под
+        холст. Это самый честный фон: настоящий экран, а не реконструкция.<br>
         <b>Про «набросок с картинками».</b> Рамки и полосы читаются из кода верно &mdash;
         это и есть то, что здесь правится. А вот куда именно ложится каждая
         картинка, статический разбор знает плохо: часть виджетов создаётся в
         циклах, часть экранов держит несколько сменных видов друг поверх друга,
         и подписи собираются на лету. Поэтому набросок &mdash; про структуру, а не
         про то, как экран выглядит на самом деле.
+      </div>
+      <div class="row" id="lycroprow" style="display:none">
+        <b class="meta">Обрезка фото</b>
+        <label>слева <input type="range" id="lycl" min="0" max="45" value="0" style="width:110px" oninput="lyCrop()"></label>
+        <label>сверху <input type="range" id="lyct" min="0" max="45" value="0" style="width:110px" oninput="lyCrop()"></label>
+        <label>справа <input type="range" id="lycr" min="55" max="100" value="100" style="width:110px" oninput="lyCrop()"></label>
+        <label>снизу <input type="range" id="lycb" min="55" max="100" value="100" style="width:110px" oninput="lyCrop()"></label>
+        <button onclick="lyPhotoDrop()">Убрать фото</button>
+        <span id="lycropmeta" class="meta"></span>
       </div>
       <div class="row" style="align-items:flex-start">
         <div id="lycanvas" style="position:relative;width:640px;height:480px;
@@ -1344,7 +1358,7 @@ async function applyText(){
    moving a box here is a change to those numbers and nothing else. */
 
 const LYS = 2;                     /* the canvas is the 320x240 screen at 2x */
-let LY = {screens: [], items: [], sel: -1, dirty: {}, stamp: 0};
+let LY = {screens: [], items: [], sel: -1, dirty: {}, stamp: 0, photos: {}};
 
 async function lyInit(){
   let d;
@@ -1376,10 +1390,56 @@ async function lyInit(){
   lyLoad();
 }
 
+async function lyUpload(){
+  const f = $('#lyphoto').files[0];
+  if(!f) return;
+  const data = await readFileAsDataURL(f);
+  const cur = +$('#lyscr').value || 0;
+  await api('/api/screen_photo', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({screen: cur, data})});
+  log('фото для экрана ' + cur + ' загружено — подгони обрезку по краям дисплея','g');
+  $('#lyphoto').value = '';
+  await lyPhotos(); LY.stamp = Date.now(); lyDraw();
+}
+
+async function lyPhotos(){
+  try{ const d = await api('/api/screen_photos'); LY.photos = d.photos || {}; }
+  catch(_){ LY.photos = {}; }
+}
+
+async function lyCrop(){
+  const cur = +$('#lyscr').value || 0;
+  const crop = {l: +$('#lycl').value/100, t: +$('#lyct').value/100,
+                r: +$('#lycr').value/100, b: +$('#lycb').value/100};
+  $('#lycropmeta').textContent = 'слева ' + $('#lycl').value + '%, сверху ' +
+    $('#lyct').value + '%, справа ' + $('#lycr').value + '%, снизу ' + $('#lycb').value + '%';
+  await api('/api/screen_photo', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({screen: cur, crop})});
+  LY.photos[cur] = [crop.l, crop.t, crop.r, crop.b];
+  LY.stamp = Date.now(); lyDraw();
+}
+
+async function lyPhotoDrop(){
+  const cur = +$('#lyscr').value || 0;
+  if(!confirm('Убрать фото экрана ' + cur + '?')) return;
+  await api('/api/screen_photo', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({screen: cur, remove: true})});
+  await lyPhotos(); lyDraw();
+}
+
 async function lyLoad(){
   const i = +$('#lyscr').value || 0;
   const d = await api('/api/layout_screen?screen=' + i);
   LY.items = d.items; LY.sel = -1; LY.dirty = {}; LY.stamp = Date.now();
+  await lyPhotos();
+  const c0 = LY.photos[i];
+  if(c0){
+    $('#lycl').value = Math.round(c0[0]*100); $('#lyct').value = Math.round(c0[1]*100);
+    $('#lycr').value = Math.round(c0[2]*100); $('#lycb').value = Math.round(c0[3]*100);
+  }
   $('#lyapply').disabled = true; $('#lystate').textContent = '';
   lyDraw();
 }
@@ -1387,14 +1447,18 @@ async function lyLoad(){
 function lyDraw(){
   const c = $('#lycanvas');
   c.innerHTML = '';
-  // the screen as the pedal draws it, with the editable boxes over the top
-  if($('#lyreal').checked){
+  // a photograph of the real screen if there is one, otherwise the sketch
+  const cur = +$('#lyscr').value || 0;
+  const hasPhoto = LY.photos && (cur in LY.photos);
+  if(hasPhoto || $('#lyreal').checked){
     const bg = document.createElement('img');
-    bg.src = '/api/screen_render?screen=' + (+$('#lyscr').value||0) +
-             '&scale=' + LYS + '&t=' + LY.stamp;
+    bg.src = (hasPhoto ? '/api/screen_photo?screen=' : '/api/screen_render?screen=') +
+             cur + '&scale=' + LYS + '&t=' + LY.stamp;
     bg.style.cssText = 'position:absolute;left:0;top:0;image-rendering:pixelated';
     c.appendChild(bg);
   }
+  $('#lycroprow').style.display = hasPhoto ? '' : 'none';
+  const backdrop = hasPhoto || $('#lyreal').checked;
   if($('#lygrid').checked){
     const g = document.createElement('div');
     g.style.position = 'absolute'; g.style.inset = '0';
@@ -1413,7 +1477,7 @@ function lyDraw(){
       'width:' + (it.w * LYS) + 'px;height:' + (it.h * LYS) + 'px;box-sizing:border-box;' +
       'border:' + (i === LY.sel ? 2 : 1) + 'px solid hsl(' + hue + ' 80% 65%);cursor:move;' +
       'background:hsl(' + hue + ' 80% 55% / ' +
-        (i === LY.sel ? 0.30 : ($('#lyreal').checked ? 0.0 : 0.14)) + ')';
+        (i === LY.sel ? 0.28 : (backdrop ? 0.05 : 0.16)) + ')';
     el.title = i + ': ' + it.w + '×' + it.h + ' @ ' + it.x + ',' + it.y;
     const tag = document.createElement('div');
     tag.textContent = i;
