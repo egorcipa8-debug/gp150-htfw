@@ -82,13 +82,13 @@ class Screen(object):
             return None
         cached = self._sub.get(target)
         if cached is not None:
-            return cached or None
+            return cached
         cs = lv_trace.trace(self.L.code, SD, target, self._end(target))
         keep = [c for c in cs
                 if c['target'] in (self.create, self.L.pos, self.L.size,
                                    self.set_img)]
-        self._sub[target] = cs if keep else []
-        return cs if keep else None
+        self._sub[target] = bool(keep)
+        return bool(keep)
 
     # -- who does what ---------------------------------------------------
     def _create(self):
@@ -131,72 +131,89 @@ class Screen(object):
     def _walk(self, calls, objs, order, get, tag, parent, left):
         """Read one function's calls into the tree, following its helpers.
 
-        `tag` keeps two invocations of the same helper apart - without it the
-        second row of a list would land on top of the first, because both use
-        the same registers and the same struct slots.
+        Only a call that is one of the four recognised setters, or the
+        constructor, brings a widget into being. An earlier version made one
+        for every call whose first argument it could name, which filled a
+        screen with dozens of things that were never on it - seventy-three of
+        the home screen's eighty-three, all of them sizeless and parentless.
+
+        `tag` keeps two invocations of the same helper apart, so the second row
+        of a list does not land on top of the first.
         """
+        known = (self.create, self.L.pos, self.L.size, self.set_img,
+                 self.align)
+
         def name(v):
             k = v.key() if v is not None else None
             return (tag + k) if k is not None else None
 
         ret_slot = {}
         for c in calls:
-            if c['target'] == self.create:
-                key = tag + (('slot',) + c['stored']) if c['stored'] \
-                    else tag + ('ret', c['ret'].v)
-                ret_slot[c['ret'].v] = key
-                o = get(key)
-                p = c['args'].get(0)
-                o['parent'] = name(p) if p is not None else parent
-                if o['parent'] not in objs:
-                    o['parent'] = parent
+            if c['target'] != self.create:
+                continue
+            key = (tag + ('slot',) + c['stored']) if c['stored'] \
+                else (tag + ('ret', c['ret'].v))
+            ret_slot[c['ret'].v] = key
+            o = get(key)
+            p = c['args'].get(0)
+            who = name(p)
+            if who is not None and who[len(tag)] == 'ret':
+                who = ret_slot.get(p.v, who)
+            o['parent'] = who if who in objs else parent
 
         for c in calls:
             who = c['args'].get(0)
             key = name(who)
-            if key is not None and key[1] == 'ret':
+            if key is not None and key[len(tag)] == 'ret':
                 key = ret_slot.get(who.v, key)
-            a, b = c['args'].get(1), c['args'].get(2)
-            if key is not None:
+            a = c['args'].get(1)
+            b = c['args'].get(2)
+
+            if c['target'] in known and c['target'] != self.create \
+                    and key is not None:
                 o = get(key)
                 if o['parent'] is None and key != parent:
                     o['parent'] = parent
-                if c['target'] == self.L.pos and a is not None and b is not None \
-                        and a.kind == 'imm' and b.kind == 'imm':
+                if c['target'] == self.L.pos and a is not None \
+                        and b is not None and a.kind == 'imm' \
+                        and b.kind == 'imm':
                     o['x'], o['y'] = a.v, b.v
                     o['x_at'], o['y_at'] = a.at, b.at
-                    continue
-                if c['target'] == self.L.size and a is not None and b is not None \
-                        and a.kind == 'imm' and b.kind == 'imm':
+                elif c['target'] == self.L.size and a is not None \
+                        and b is not None and a.kind == 'imm' \
+                        and b.kind == 'imm':
                     o['w'], o['h'] = a.v, b.v
                     o['w_at'], o['h_at'] = a.at, b.at
-                    continue
-                if c['target'] == self.set_img and a is not None \
+                elif c['target'] == self.set_img and a is not None \
                         and a.kind == 'lit' and a.v in self.images:
                     o['img'] = a.v
                     pic = self.images[a.v]
                     if o['w'] is None:
                         # an image with no size of its own takes the picture's
                         o['w'], o['h'] = pic.w, pic.h
-                    continue
-                if c['target'] == self.align and a is not None \
+                elif c['target'] == self.align and a is not None \
                         and a.kind == 'imm' and a.v in ALIGN:
                     o['align'] = a.v
                     d = c['args'].get(3)
                     o['ax_off'] = b.v if b is not None and b.kind == 'imm' else 0
                     o['ay_off'] = d.v if d is not None and d.kind == 'imm' else 0
+                continue
+
+            # a caption, but only for something already known to be a widget
+            if key in objs and a is not None and a.kind == 'lit':
+                t = text_at(self.img, a.v)
+                if t and t != '%s':
+                    objs[key]['text'] = t
                     continue
-                if a is not None and a.kind == 'lit':
-                    t = text_at(self.img, a.v)
-                    if t and t != '%s':
-                        o['text'] = t
-                        continue
-            if left > 0:
-                sub = self._builds_widgets(c['target'])
-                if sub:
-                    self._walk(sub, objs, order, get,
-                               tag + ('@%X' % c['at'],),
-                               key if key in objs else parent, left - 1)
+
+            if left > 0 and self._builds_widgets(c['target']):
+                # hand the callee the arguments it was called with, so the
+                # parent it was given is the parent its widgets get
+                sub = lv_trace.trace(self.L.code, SD, c['target'],
+                                     self._end(c['target']), init=c['args'])
+                self._walk(sub, objs, order, get,
+                           tag + ('@%X' % c['at'],),
+                           key if key in objs else parent, left - 1)
 
     def place(self):
         """Absolute boxes, by composing each widget onto its parent.

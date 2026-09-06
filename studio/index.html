@@ -246,7 +246,7 @@ dialog::backdrop{background:#0009}
         <b class="meta">Экран</b>
         <select id="lyscr" style="min-width:220px" onchange="lyLoad()"></select>
         <button onclick="lyInit()">Перечитать</button>
-        <label class="meta"><input type="checkbox" id="lyreal" checked onchange="lyDraw()"> как на экране</label>
+        <label class="meta"><input type="checkbox" id="lyreal" onchange="lyDraw()"> набросок с картинками</label>
         <label class="meta"><input type="checkbox" id="lygrid" onchange="lyDraw()"> сетка</label>
         <div class="spacer"></div>
         <button class="primary" id="lyapply" onclick="lyApply()" disabled>Записать в прошивку</button>
@@ -259,10 +259,14 @@ dialog::backdrop{background:#0009}
         показаны прямоугольниками: тащи за середину &mdash; двигаешь, за правый нижний
         угол &mdash; меняешь размер, либо правь числа справа. <b>Записать</b> меняет
         те самые константы на месте.<br>
-        Координаты в LVGL отсчитываются от родителя, поэтому холст &mdash; схема, а не
-        точная картинка экрана. И число обязано влезть в ту же инструкцию, что
-        стоит сейчас: если не влезает, эта правка честно откажется, а остальные
-        применятся.
+        Число обязано влезть в ту же инструкцию, что стоит сейчас: если не
+        влезает, эта правка честно откажется, а остальные применятся.<br>
+        <b>Про «набросок с картинками».</b> Рамки и полосы читаются из кода верно &mdash;
+        это и есть то, что здесь правится. А вот куда именно ложится каждая
+        картинка, статический разбор знает плохо: часть виджетов создаётся в
+        циклах, часть экранов держит несколько сменных видов друг поверх друга,
+        и подписи собираются на лету. Поэтому набросок &mdash; про структуру, а не
+        про то, как экран выглядит на самом деле.
       </div>
       <div class="row" style="align-items:flex-start">
         <div id="lycanvas" style="position:relative;width:640px;height:480px;

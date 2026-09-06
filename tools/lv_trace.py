@@ -72,7 +72,7 @@ def _u16(b, i):
     return struct.unpack_from('<H', b, i)[0]
 
 
-def trace(code, base, start, end):
+def trace(code, base, start, end, init=None):
     """Follow one function, returning its calls with symbolic arguments.
 
     `start` and `end` are addresses inside `code`, which begins at `base`.
@@ -81,7 +81,9 @@ def trace(code, base, start, end):
     as 'stored', because that is how a widget gets a name.
     """
     out = []
-    regs = {}
+    # a helper receives its parent as an argument, so tracing it with empty
+    # registers loses the one thing that connects its widgets to the screen
+    regs = dict(init) if init else {}
     i = start - base
     stop = end - base
     n = len(code)

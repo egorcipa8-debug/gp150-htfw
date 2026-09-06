@@ -1728,8 +1728,29 @@ battery and its two indicator lamps where the device puts them. Studio's
 Раскладка tab draws that under the editable boxes, so the thing being dragged is
 the thing on the screen.
 
-**What is still missing, plainly.** Captions are set as `set_text(obj, "%s")`
-with the string built at run time from the tables, so almost no label resolves
-statically. Background colours are not read yet. Widgets built three or more
-levels down are not followed. So this is the screen's structure and its
-pictures, not a photograph of it.
+**What it gets right, and what it does not.** The frame is sound: the home
+screen reads as a 320x240 root holding a 7-pixel meter strip, a 43-pixel
+header, a 62-pixel band, three 59-pixel bands stacked at the same y - which is
+one area with three alternative views - and a 55-pixel footer, with a 195x87
+panel over the middle. Those numbers are the ones the tab edits, and they are
+read straight out of the instructions.
+
+Where each *picture* lands is another matter, and a first attempt overstated
+it. Three things defeat static reconstruction here:
+
+* widgets made in a loop come from one call site, so a row of ten tiles reads
+  as one;
+* a screen keeps several alternative views in the same place and shows one, and
+  nothing in the code says which;
+* captions are `set_text(obj, "%s")` with the string built at run time from the
+  tables, so almost none resolve.
+
+There was also a plain bug worth recording: an early version made an object for
+every call whose first argument it could name, which put seventy-three phantom
+widgets on the home screen's fifty. Only the constructor and the four
+recognised setters bring a widget into being now.
+
+So the preview is a **structural sketch** and is labelled as one in Studio,
+off by default. A true picture of a screen needs the device: patch the boot to
+enter screen *N*, flash, photograph - the method the GP-200 project used - at
+the cost of a flash cycle per screen.
